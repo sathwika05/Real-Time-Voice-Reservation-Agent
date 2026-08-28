@@ -1,0 +1,237 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Nova Sonic - Audio Spike</title>
+    <style>
+        /* Deliberately minimal. This page exists to prove audio round-trips,
+           not to look good. The real UI comes later. */
+        body   { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
+        button { font-size: 1.1rem; padding: 0.75rem 1.5rem; cursor: pointer; }
+        #log   { margin-top: 1.5rem; font-family: ui-monospace, monospace; font-size: 0.85rem;
+                 white-space: pre-wrap; border: 1px solid #ccc; padding: 1rem; height: 18rem;
+                 overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>Nova Sonic audio spike</h1>
+    <p>Click start, allow the microphone, then speak. Say your name and date of birth.</p>
+
+    <button id="btn">Start</button>
+
+    <label style="display:block; margin-top:1rem;">
+        <input type="checkbox" id="fastInterrupt">
+        Fast interrupt (<strong>headphones only</strong>) - cuts playback the moment you
+        speak, without waiting for the server. Leave this OFF when using speakers:
+        the microphone hears the agent through them and the agent silences itself.
+    </label>
+
+    <div id="log"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Audio format constants. These MUST match what Nova Sonic expects, and what
+// hotel_agent.py uses in the terminal version.
+// ---------------------------------------------------------------------------
+const INPUT_RATE  = 16000;   // Microphone audio we SEND, in Hz.
+const OUTPUT_RATE = 24000;   // Generated speech we RECEIVE, in Hz.
+
+// ---------------------------------------------------------------------------
+// Session state. Declared up front so both start() and the message handlers
+// can reach them.
+// ---------------------------------------------------------------------------
+let socket        = null;    // The WebSocket carrying audio both directions.
+let captureCtx    = null;    // AudioContext used for microphone capture.
+let playbackCtx   = null;    // Separate AudioContext used for playback.
+let nextPlayTime  = 0;       // When the next received chunk should begin playing.
+let activeSources = [];      // Currently scheduled audio, so barge-in can cancel it.
+let running       = false;   // Whether a session is active.
+
+const btn = document.getElementById("btn");
+const logEl = document.getElementById("log");
+
+/** Append a timestamped line to the on-page log. */
+function log(message) {
+    const time = new Date().toLocaleTimeString();
+    logEl.textContent += `[${time}] ${message}\n`;
+    logEl.scrollTop = logEl.scrollHeight;          // Keep the newest line visible.
+}
+
+// ---------------------------------------------------------------------------
+// PLAYBACK
+// ---------------------------------------------------------------------------
+
+/**
+ * Schedule one chunk of received speech for playback.
+ *
+ * Chunks arrive over the network at irregular intervals, but must play back
+ * as one continuous stream. Rather than playing each chunk on arrival (which
+ * produces clicks and gaps), each is scheduled to begin exactly where the
+ * previous one ends.
+ */
+function playChunk(arrayBuffer) {
+    const pcm16 = new Int16Array(arrayBuffer);      // Incoming bytes as 16-bit samples.
+    const float32 = new Float32Array(pcm16.length); // Web Audio requires floats.
+
+    // Convert signed 16-bit integers back to the -1.0..1.0 range Web Audio uses.
+    for (let i = 0; i < pcm16.length; i++) {
+        float32[i] = pcm16[i] / 0x8000;
+    }
+
+    // Wrap the samples in an AudioBuffer: 1 channel, at the output sample rate.
+    const buffer = playbackCtx.createBuffer(1, float32.length, OUTPUT_RATE);
+    buffer.copyToChannel(float32, 0);               // Fill channel 0 with our samples.
+
+    const source = playbackCtx.createBufferSource(); // A one-shot player for this buffer.
+    source.buffer = buffer;                          // Give it the audio.
+    source.connect(playbackCtx.destination);         // Route it to the speakers.
+
+    // Never schedule in the past. If the network stalled and nextPlayTime has
+    // already elapsed, restart the timeline from now - otherwise the chunk
+    // would be silently dropped.
+    const startAt = Math.max(nextPlayTime, playbackCtx.currentTime);
+
+    source.start(startAt);                           // Begin at the scheduled moment.
+    nextPlayTime = startAt + buffer.duration;        // Next chunk follows immediately after.
+
+    activeSources.push(source);                      // Remember it so barge-in can stop it.
+    source.onended = () => {                         // Once finished, forget it.
+        activeSources = activeSources.filter(s => s !== source);
+    };
+}
+
+/**
+ * Stop everything currently playing or scheduled.
+ *
+ * Called when the server signals barge-in. Draining the queue server-side is
+ * not enough - audio already sent is buffered here and would keep playing over
+ * the guest.
+ */
+function flushPlayback() {
+    for (const source of activeSources) {
+        try {
+            source.stop();                           // Cut it off immediately.
+        } catch (e) {
+            // Already finished; stop() on a completed source throws. Ignore.
+        }
+    }
+    activeSources = [];                              // Clear the list.
+    nextPlayTime = 0;                                // Restart the timeline on the next chunk.
+    log("barge-in: playback flushed");
+}
+
+// ---------------------------------------------------------------------------
+// SESSION
+// ---------------------------------------------------------------------------
+
+async function start() {
+    running = true;
+    btn.textContent = "Stop";
+    log("connecting...");
+
+    // --- WebSocket ---------------------------------------------------------
+    // Build the URL from the current page so this works on any host/port.
+    socket = new WebSocket(`ws://${location.host}/ws`);
+    socket.binaryType = "arraybuffer";               // Receive audio as ArrayBuffer, not Blob.
+
+    socket.onmessage = (event) => {
+        if (typeof event.data === "string") {        // Text frame = a control message.
+            const msg = JSON.parse(event.data);
+            if (msg.type === "barge_in") flushPlayback();
+            else if (msg.type === "ready") log("agent ready - start speaking");
+            else if (msg.type === "session_ended") {
+                // The Bedrock stream closed. Nothing is listening any more, so
+                // say so plainly instead of letting the page look functional.
+                log("SESSION ENDED - the agent is no longer listening. Click Stop, then Start.");
+                flushPlayback();                     // Drop any audio still queued.
+            }
+            return;
+        }
+        playChunk(event.data);                       // Binary frame = generated speech.
+    };
+
+    socket.onclose = () => log("socket closed");
+    socket.onerror = () => log("socket error");
+
+    // --- Playback context --------------------------------------------------
+    // Created at 24000 Hz to match Nova Sonic's output, so no resampling is
+    // needed on the way to the speakers.
+    playbackCtx = new AudioContext({ sampleRate: OUTPUT_RATE });
+
+    // --- Microphone capture ------------------------------------------------
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            // Echo cancellation is essential here. Without it the microphone
+            // picks up the agent's own voice from the speakers, which Nova
+            // Sonic hears as the guest talking - triggering barge-in
+            // constantly and cutting the agent off mid-sentence.
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        }
+    });
+
+    // Creating the context at 16000 Hz makes the browser resample the
+    // microphone for us, avoiding hand-written downsampling.
+    captureCtx = new AudioContext({ sampleRate: INPUT_RATE });
+
+    await captureCtx.audioWorklet.addModule("/static/mic-processor.js");  // Load the worklet code.
+
+    const micSource = captureCtx.createMediaStreamSource(stream);         // Microphone as a node.
+    const micNode = new AudioWorkletNode(captureCtx, "mic-processor");    // Our capture processor.
+
+    // The worklet sends two kinds of message: a one-time diagnostic object
+    // reporting the real capture rate, and then a stream of audio chunks.
+    micNode.port.onmessage = (event) => {
+        // The guest started talking. Silence the agent immediately rather than
+        // waiting for the server to report an interruption - that round trip
+        // takes long enough that the agent talks over them meanwhile.
+        if (event.data && event.data.type === "speech_start") {
+            // Only honour local detection when the user has confirmed they are
+            // on headphones. On speakers the microphone also hears the agent,
+            // so this would fire on the agent's own voice and cut it off
+            // mid-reply - the agent would effectively silence itself.
+            if (!document.getElementById("fastInterrupt").checked) return;
+
+            if (activeSources.length > 0) {          // Only if the agent is actually speaking.
+                log("you interrupted - cutting playback");
+                flushPlayback();                     // Stop instantly, locally.
+            }
+            return;
+        }
+
+        // Diagnostic message - an object rather than raw audio.
+        if (event.data && event.data.type === "rate") {
+            log(`capture rate: ${event.data.inputRate} Hz -> 16000 Hz `
+                + `(resample ratio ${event.data.ratio.toFixed(2)})`);
+            if (event.data.ratio !== 1) {
+                log("note: browser ignored the 16 kHz request; resampling in the worklet");
+            }
+            return;                                  // Not audio - nothing to send.
+        }
+
+        // Otherwise it is a 64 ms chunk of 16 kHz PCM16, ready for the server.
+        if (socket.readyState === WebSocket.OPEN) {  // Only send on a live socket.
+            socket.send(event.data);                 // Binary frame.
+        }
+    };
+
+    micSource.connect(micNode);                      // Microphone feeds the worklet.
+    log("microphone open at " + captureCtx.sampleRate + " Hz");
+}
+
+async function stop() {
+    running = false;
+    btn.textContent = "Start";
+
+    if (socket) socket.close();                      // Ends the session server-side too.
+    if (captureCtx) await captureCtx.close();        // Releases the microphone.
+    if (playbackCtx) await playbackCtx.close();      // Frees the playback context.
+
+    log("stopped");
+}
+
+btn.onclick = () => (running ? stop() : start());
+</script>
+</body>
+</html>

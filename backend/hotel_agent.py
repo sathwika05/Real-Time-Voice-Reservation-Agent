@@ -72,12 +72,58 @@ async def time_it_async(label, methodToRun):
     return result
 
 
+# Room types the hotel actually offers. Any update request outside this set is
+# rejected, so a garbled or hallucinated value cannot be written to a booking.
+ALLOWED_ROOM_TYPES = {
+    "king deluxe": "King Deluxe",
+    "queen standard": "Queen Standard",
+    "twin standard": "Twin Standard",
+    "suite": "Suite",
+    "king suite": "King Suite",
+}
+
+
+def normalize_dob(value):
+    """
+    Reduce a spoken date of birth to YYYY-MM-DD so it can be compared exactly.
+
+    The model transcribes speech like "June fifth, nineteen ninety-one" into a
+    date string, but not always in the same format. Returns None when the value
+    cannot be parsed - and an unparseable date must never count as a match.
+    """
+    if not value or not isinstance(value, str):
+        return None
+
+    text = value.strip()
+
+    # Try the formats the model realistically produces, most likely first.
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%B %d, %Y", "%B %d %Y", "%d %B %Y"):
+        try:
+            return datetime.datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue                        # Not this format - try the next.
+
+    return None                             # Unrecognised: treat as a failed match.
+
+
 class ToolProcessor:
     def __init__(self):
         self.tasks = {}
         self.dynamodb = boto3.resource("dynamodb",region_name="us-east-1")
         self.guest_table = self.dynamodb.Table("Hotel_Guests")
         self.reservation_table = self.dynamodb.Table("Hotel_Reservations")
+
+        # Identity verification state for THIS conversation only. A new
+        # ToolProcessor is built per session, so verification cannot leak
+        # between callers. Until checkGuestProfileTool confirms a matching
+        # date of birth this stays None, and every other tool refuses to
+        # return data.
+        #
+        # This is enforced in code rather than in the system prompt on purpose:
+        # a prompt instruction is a request the model may ignore, and testing
+        # showed it did - confirming identity for a wrong DOB, and even for a
+        # guest that did not exist.
+        self.verified_guest = None
 
         try:
             self.loop = asyncio.get_running_loop() # Returns the currently running event loop and raises an error if no event loop is running.
@@ -157,18 +203,59 @@ class ToolProcessor:
             if not guest_name:
                 return {"error":"guestName is required"}
 
+            # The date of birth the GUEST spoke, passed through by the model.
+            spoken_dob = content_data.get("dateOfBirth","")
+            if not spoken_dob:
+                # Without something to compare against there is nothing to
+                # verify, so refuse rather than returning the profile.
+                return {
+                    "verified": False,
+                    "message": "dateOfBirth is required to verify identity. Ask the guest for it.",
+                }
+
             response = self.guest_table.get_item(Key={'guestName':guest_name})
 
             if 'Item' not in response:
-                return {"found": False,"message": "Guest not found."}
-
+                # Guest does not exist. Return NO profile data - and say plainly
+                # that verification failed, so the model cannot read this as a
+                # partial success.
+                self.verified_guest = None
+                return {
+                    "verified": False,
+                    "found": False,
+                    "message": "No guest found with that name. Identity is NOT verified.",
+                }
 
             item = response['Item']
-            
+
+            # ---- The actual gate ------------------------------------------
+            # Compare in Python, not in the prompt. Both sides are normalised to
+            # YYYY-MM-DD first so formatting differences cannot cause a false
+            # mismatch; an unparseable value normalises to None and fails.
+            stored = normalize_dob(item.get('dob'))
+            spoken = normalize_dob(spoken_dob)
+
+            if stored is None or spoken is None or stored != spoken:
+                self.verified_guest = None          # Explicitly revoke any prior verification.
+                return {
+                    "verified": False,
+                    "found": True,
+                    # Deliberately does NOT echo the stored DOB - that would let
+                    # a caller probe for the correct value by guessing.
+                    "message": (
+                        "The date of birth provided does not match our records. "
+                        "Identity is NOT verified. Do not disclose any reservation "
+                        "or billing details."
+                    ),
+                }
+
+            # Verified. Record it for this session so the other tools will run.
+            self.verified_guest = item['guestName']
+
             return {
+                "verified": True,
                 "found": True,
                 "guestName": item['guestName'],
-                "dob": item.get('dob'),
                 "loyaltyTier": item.get('loyaltyTier'),
                 "phoneNumber": item.get('phoneNumber'),
                 "email": item.get('email'),
@@ -195,6 +282,21 @@ class ToolProcessor:
 
             if not guest_name:
                 return {"error":"guestName is required."}
+
+            # ---- Verification gate ----------------------------------------
+            # Reservation details are personal data. Refuse unless THIS session
+            # already verified THIS guest through checkGuestProfileTool. The
+            # check is on the name too, so verifying as one guest cannot be used
+            # to read another guest's booking.
+            if self.verified_guest != guest_name:
+                return {
+                    "verified": False,
+                    "error": (
+                        "Identity not verified for this guest. Call checkGuestProfileTool "
+                        "with the guest's name and spoken date of birth first. "
+                        "Do not disclose any reservation details."
+                    ),
+                }
 
             today_str = _dt.date.today().strftime('%Y-%m-%d')
 
@@ -270,17 +372,70 @@ class ToolProcessor:
             reservation_id = content_data.get("reservationId")
             new_room_type = content_data.get("newRoomType")
             new_special_request = content_data.get("newSpecialRequest")
+            new_check_out = content_data.get("newCheckOutDate")
 
             if not reservation_id:
                 return {"error": "reservationId is required."}
+
+            # ---- Verification gate ----------------------------------------
+            # Modifying a booking is more sensitive than reading one, so the
+            # same check applies - plus confirmation that the reservation being
+            # changed actually belongs to the verified guest.
+            if not self.verified_guest:
+                return {
+                    "verified": False,
+                    "error": (
+                        "Identity not verified. Call checkGuestProfileTool with the "
+                        "guest's name and spoken date of birth before making changes."
+                    ),
+                }
+
+            existing = self.reservation_table.get_item(
+                Key={'reservationId': reservation_id}
+            ).get("Item")
+
+            if not existing:                                    # No such booking.
+                return {"error": f"Reservation {reservation_id} not found."}
+
+            if existing.get("guestName") != self.verified_guest:
+                # Verified as someone else - refuse. Without this, a verified
+                # guest could modify any booking by guessing its ID.
+                return {
+                    "verified": False,
+                    "error": "This reservation belongs to a different guest. Refusing to modify it.",
+                }
 
             # Build dynamic update expression
             update_parts = []
             expr_values = {}
             # rt - room_type
             if new_room_type:
+                # Validate against the real room list. Testing showed the tool
+                # would otherwise accept and store nonsense - a single "." was
+                # written into a live booking as a room type.
+                canonical = ALLOWED_ROOM_TYPES.get(new_room_type.strip().lower())
+                if not canonical:
+                    return {
+                        "error": (
+                            f"'{new_room_type}' is not a room type we offer. "
+                            f"Valid options: {', '.join(sorted(set(ALLOWED_ROOM_TYPES.values())))}."
+                        )
+                    }
                 update_parts.append("roomType = :rt")
-                expr_values[":rt"]=new_room_type
+                expr_values[":rt"]=canonical            # Store the canonical spelling.
+
+            # co - check_out date. Added because the model previously could not
+            # change dates, so when asked it appended a special request instead
+            # and reported the date change as done. Supporting the operation
+            # removes the incentive to fake it.
+            if new_check_out:
+                normalized_checkout = normalize_dob(new_check_out)   # Same YYYY-MM-DD parser.
+                if not normalized_checkout:
+                    return {"error": f"Could not understand the date '{new_check_out}'. Use YYYY-MM-DD."}
+                if normalized_checkout <= existing.get("checkInDate", ""):
+                    return {"error": "Check-out date must be after the check-in date."}
+                update_parts.append("checkOutDate = :co")
+                expr_values[":co"]=normalized_checkout
             # sr - special request
             if new_special_request:
                 update_parts.append(
@@ -292,7 +447,7 @@ class ToolProcessor:
 
             if not update_parts:
                 return {
-                "error": "Nothing to update. Provide newRoomType and/or newSpecialRequest."
+                "error": "Nothing to update. Provide newRoomType, newCheckOutDate, and/or newSpecialRequest."
             }
 
             update_expression = "SET " + ", ".join(update_parts)
@@ -317,7 +472,9 @@ class ToolProcessor:
             msg_parts = [f"Reservation {reservation_id} has been updated."]
 
             if new_room_type:
-                msg_parts.append(f"New room type: {new_room_type}")
+                msg_parts.append(f"New room type: {expr_values.get(':rt')}")
+            if new_check_out:
+                msg_parts.append(f"New check-out date: {expr_values.get(':co')}")
             if new_special_request:
                 msg_parts.append(f"Added special request: '{new_special_request}'.")
 
@@ -474,8 +631,17 @@ class BedrockStreamManager:
                         "type": "string",
                         "description": "The full name of the hotel guest.",
                     },
+                    "dateOfBirth": {
+                        "type": "string",
+                        "description": (
+                            "The date of birth the guest SAID, converted to YYYY-MM-DD. "
+                            "For example 'June fifth nineteen ninety one' becomes '1991-06-05'. "
+                            "The tool compares this against our records and returns whether "
+                            "identity is verified. Never guess this value - ask the guest."
+                        ),
+                    },
                 },
-                "required": ["guestName"]
+                "required": ["guestName", "dateOfBirth"]
             }
         )
 
@@ -509,6 +675,14 @@ class BedrockStreamManager:
                         "type": "string",
                         "description": "New room type to set (e.g., 'King Deluxe'). Optional."
                     },
+                    "newCheckOutDate": {
+                        "type": "string",
+                        "description": (
+                            "A new check-out date in YYYY-MM-DD format. Use this when the guest "
+                            "asks to extend or shorten their stay. Do NOT record a date change "
+                            "as a special request. Optional."
+                        ),
+                    },
                     "newSpecialRequest": {
                         "type": "string",
                         "description": "A short note to append to specialRequests, e.g. 'Feather-free pillows'. Optional.",
@@ -540,8 +714,11 @@ class BedrockStreamManager:
                                 "toolSpec": {
                                     "name": "checkGuestProfileTool",
                                     "description": (
-                                        "Use this tool to look up a hotel guest's profile in the hotel system. "
-                                        "It returns DOB for identity verification, loyalty tier, and preferences."
+                                        "Verify a guest's identity. Pass the guest's name AND the date of birth "
+                                        "they spoke. The tool compares it against our records and returns "
+                                        "verified true or false. It does NOT return the stored date of birth. "
+                                        "If verified is false, you must not disclose any reservation or billing "
+                                        "details - the other tools will refuse to run."
                                     ),
                                     "inputSchema": {"json": guest_tool_schema},
                                 }
@@ -667,19 +844,41 @@ class BedrockStreamManager:
                 "SECURITY:"
                 "- Before giving any reservation or billing details, you MUST verify the guest's identity."
                 "- Politely ask for their full name and date of birth."
-                "- Use checkGuestProfileTool to look them up."
-                "- Compare the DOB the guest said with the DOB from the tool. Only continue if they match."
+                "- Call checkGuestProfileTool with BOTH the guest's name and the date of birth they spoke, "
+                "  converted to YYYY-MM-DD format."
+                "- The tool performs the comparison and returns a 'verified' field. Trust that field only."
+                "- If verified is false, tell the guest the details do not match and ask them to try again. "
+                "  Do NOT reveal any reservation, room, or billing information, and do NOT claim you verified them."
+                "- Never state that you checked or matched a date of birth unless the tool returned verified true."
                 "AFTER ID VERIFICATION:"
                 "1. If they ask about an upcoming stay, room details, or balance, call checkReservationStatusTool "
                 "   with their guestName. Use includePastStays=true only if they ask about previous stays."
-                "2. If they want to change their room type or add a special request (e.g. extra pillows, "
-                "   high floor, feather-free pillows), first identify the correct reservationId using "
-                "   checkReservationStatusTool, confirm it with the guest, then call updateReservationTool."
-                "3. After updating, explain clearly what changed (e.g. new room type or the special request you added)."
+                "2. If they want to change their room type, change their check-out date, or add a special "
+                "   request (e.g. extra pillows, high floor, feather-free pillows), first identify the correct "
+                "   reservationId using checkReservationStatusTool, confirm it with the guest, then call "
+                "   updateReservationTool. Use newCheckOutDate for date changes - never record a date change "
+                "   as a special request."
+                "3. Only report a change as done if the tool returned success. If the tool returns an error, "
+                "   tell the guest exactly what failed. Never claim an update succeeded when it did not."
+                "4. After updating, explain clearly what changed (e.g. new room type, new check-out date, or the special request you added)."
                 "STYLE:"
-                "- Be warm, professional, and concise."
+                "- Be warm, professional, and BRIEF. This is a spoken phone conversation, not a chat window."
+                "- Keep every reply to one or two short sentences unless the guest asks for full details."
+                "- State your capabilities ONCE at the start. Never re-list what you can help with."
+                "- Do not add closing pleasantries like 'Have a wonderful day' unless the guest is leaving."
                 "- Confirm important details back to the guest before updating."
                 "- Do not invent reservations or balances that are not in the database."
+                "STOPPING:"
+                "- If the guest says stop, be quiet, that's enough, never mind, or similar, reply with AT "
+                "  MOST three words - for example 'Of course.' - and then say nothing further."
+                "- Do not explain that you are stopping. Do not apologise at length. Do not offer more help. "
+                "  Do not ask a follow-up question. Saying more is the opposite of stopping."
+                "- Then wait silently until the guest speaks again."
+                "- Stopping applies ONLY to the reply you were giving. It is not a refusal and not the end "
+                "  of the conversation. When the guest asks something new, answer it normally and fully."
+                "- Once a guest is verified, never refuse their own reservation details on confidentiality "
+                "  grounds, and never refuse to repeat something you already told them. They are verified; "
+                "  their own booking is not confidential from them."
             )
 
             # Send the initialization events
