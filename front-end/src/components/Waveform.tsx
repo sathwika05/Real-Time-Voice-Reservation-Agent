@@ -80,6 +80,16 @@ export function Waveform({
     );
   }
 
+  // At rest, 24 bars scaled to 6% render as a row of dots that reads as a
+  // rendering fault. A single hairline is quieter and clearly deliberate.
+  if (!active) {
+    return (
+      <div className="flex h-10 items-center justify-center" aria-hidden="true">
+        <span className="h-px w-40 rounded-full bg-line" />
+      </div>
+    );
+  }
+
   return (
     // Decorative: the state label beside it carries the meaning for assistive tech.
     <div className="flex h-10 items-center justify-center gap-[2px]" aria-hidden="true">

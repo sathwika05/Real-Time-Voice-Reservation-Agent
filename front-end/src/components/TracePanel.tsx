@@ -103,7 +103,10 @@ export function TracePanel({
     <>
       {/* Desktop: an inline column, not a modal - it never traps focus. */}
       {open && (
-        <aside className="hidden w-[380px] shrink-0 flex-col border-l border-line bg-surface lg:flex">
+        <aside
+          id="engineering-trace"
+          className="hidden w-[380px] shrink-0 flex-col border-l border-line bg-surface lg:flex"
+        >
           {body}
         </aside>
       )}

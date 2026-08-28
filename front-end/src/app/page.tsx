@@ -76,9 +76,7 @@ export default function Page() {
           />
         </main>
 
-        <div id="engineering-trace">
-          <TracePanel entries={s.trace} open={traceOpen} onClose={() => setTraceOpen(false)} />
-        </div>
+        <TracePanel entries={s.trace} open={traceOpen} onClose={() => setTraceOpen(false)} />
       </div>
 
       <HowItWorks />
