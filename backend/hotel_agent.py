@@ -459,12 +459,16 @@ class ToolProcessor:
                 expr_values[":sr"]=[new_special_request]
                 expr_values[":empty_list"]=[]
 
-            if not update_parts:
+            # Only a proposal needs fields supplied. A commit replays the
+            # expression stored with the proposal, so requiring them again here
+            # rejected a perfectly correct commit call - the model had to resend
+            # the fields, and the guest heard an apology mid-conversation.
+            if mode == "propose" and not update_parts:
                 return {
                 "error": "Nothing to update. Provide newRoomType, newCheckOutDate, and/or newSpecialRequest."
             }
 
-            update_expression = "SET " + ", ".join(update_parts)
+            update_expression = "SET " + ", ".join(update_parts) if update_parts else ""
 
             # ---- Phase 1 of 2: propose -------------------------------------
             # Compute the change, describe it, and store it - but write nothing.
