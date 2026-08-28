@@ -125,6 +125,12 @@ class ToolProcessor:
         # guest that did not exist.
         self.verified_guest = None
 
+        # The change the guest has been read back but has not yet confirmed.
+        # updateReservationTool writes nothing until a commit arrives carrying
+        # the matching proposalId, so the read-back step cannot be skipped:
+        # there is no id to commit with until a proposal has been made.
+        self.pending_proposal = None
+
         try:
             self.loop = asyncio.get_running_loop() # Returns the currently running event loop and raises an error if no event loop is running.
         except:
@@ -374,8 +380,16 @@ class ToolProcessor:
             new_special_request = content_data.get("newSpecialRequest")
             new_check_out = content_data.get("newCheckOutDate")
 
+            # "propose" computes and returns the change without writing.
+            # "commit" applies a change the guest has already confirmed.
+            mode = (content_data.get("mode") or "propose").strip().lower()
+            proposal_id = content_data.get("proposalId")
+
             if not reservation_id:
                 return {"error": "reservationId is required."}
+
+            if mode not in ("propose", "commit"):
+                return {"error": "mode must be 'propose' or 'commit'."}
 
             # ---- Verification gate ----------------------------------------
             # Modifying a booking is more sensitive than reading one, so the
@@ -452,6 +466,79 @@ class ToolProcessor:
 
             update_expression = "SET " + ", ".join(update_parts)
 
+            # ---- Phase 1 of 2: propose -------------------------------------
+            # Compute the change, describe it, and store it - but write nothing.
+            # The guest has not agreed yet.
+            if mode == "propose":
+                changes = []                                  # Human-readable diff.
+                if new_room_type:
+                    changes.append({
+                        "field": "roomType",
+                        "from": existing.get("roomType"),
+                        "to": expr_values.get(":rt"),
+                    })
+                if new_check_out:
+                    changes.append({
+                        "field": "checkOutDate",
+                        "from": existing.get("checkOutDate"),
+                        "to": expr_values.get(":co"),
+                    })
+                if new_special_request:
+                    changes.append({
+                        "field": "specialRequests",
+                        "from": None,                          # An append, not a replace.
+                        "to": new_special_request,
+                    })
+
+                new_id = f"PROP-{uuid.uuid4().hex[:8].upper()}"
+
+                # Keep the prepared expression so commit replays exactly what was
+                # read back - not a fresh interpretation of a second tool call.
+                self.pending_proposal = {
+                    "id": new_id,
+                    "reservationId": reservation_id,
+                    "expression": update_expression,
+                    "values": expr_values,
+                    "changes": changes,
+                }
+
+                return {
+                    "mode": "proposal",
+                    "proposalId": new_id,
+                    "reservationId": reservation_id,
+                    "changes": changes,
+                    "written": False,
+                    "message": (
+                        "NOTHING HAS BEEN CHANGED YET. Read these changes back to the guest "
+                        "and ask them to confirm. If they agree, call this tool again with "
+                        f"mode='commit' and proposalId='{new_id}'."
+                    ),
+                }
+
+            # ---- Phase 2 of 2: commit --------------------------------------
+            # Only reachable with a proposalId issued by this session, so the
+            # read-back cannot be bypassed.
+            if not self.pending_proposal:
+                return {"error": "No change has been proposed yet. Call with mode='propose' first."}
+
+            if self.pending_proposal["id"] != proposal_id:
+                return {
+                    "error": (
+                        "proposalId does not match the change that was read back to the guest. "
+                        "Propose again and confirm before committing."
+                    )
+                }
+
+            if self.pending_proposal["reservationId"] != reservation_id:
+                return {"error": "This proposal was made for a different reservation."}
+
+            # Replay the stored expression rather than the arguments of this call,
+            # so what is written is exactly what the guest agreed to.
+            update_expression = self.pending_proposal["expression"]
+            expr_values = self.pending_proposal["values"]
+            committed_changes = self.pending_proposal["changes"]
+            self.pending_proposal = None                       # Single use.
+
             # Apply update
             self.reservation_table.update_item(
                 Key={'reservationId': reservation_id},
@@ -470,22 +557,45 @@ class ToolProcessor:
                 updated_item['balanceDue']=str(updated_item['balanceDue'])
 
             msg_parts = [f"Reservation {reservation_id} has been updated."]
-
-            if new_room_type:
-                msg_parts.append(f"New room type: {expr_values.get(':rt')}")
-            if new_check_out:
-                msg_parts.append(f"New check-out date: {expr_values.get(':co')}")
-            if new_special_request:
-                msg_parts.append(f"Added special request: '{new_special_request}'.")
+            for c in committed_changes:
+                if c["field"] == "specialRequests":
+                    msg_parts.append(f"Added special request: '{c['to']}'.")
+                else:
+                    msg_parts.append(f"{c['field']}: {c['from']} -> {c['to']}.")
 
             return {
                 "success": True,
+                "mode": "committed",
+                "written": True,
+                "changes": committed_changes,
                 "message": " ".join(msg_parts),
                 "updatedReservation": updated_item
             }
                     
         except Exception as e:
             return {"error": str(e)}
+
+
+# Fields that must never leave the process. Tool results are shown in the
+# browser's developer trace, which is likely to be screen-recorded or shared,
+# so personal data is stripped before any event is emitted. Redaction happens
+# here rather than in the UI: data that never leaves cannot be leaked by a
+# frontend bug.
+SENSITIVE_FIELDS = {"dob", "dateOfBirth", "email", "phoneNumber", "phone"}
+
+
+def sanitize_for_ui(value):
+    """Recursively replace sensitive values with a redaction marker."""
+    if isinstance(value, dict):
+        return {
+            k: ("[redacted]" if k in SENSITIVE_FIELDS else sanitize_for_ui(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_for_ui(v) for v in value]
+    if isinstance(value, Decimal):          # DynamoDB numbers are not JSON-serialisable.
+        return str(value)
+    return value
 
 
 # It defines a helper object that manages the whole connection of Nova Sonic on Bedrock. Sends events, responses, pushes audio into queue for playback. When a model asks to user tool it calls toolProcessor and sends back the tool results and let nova sonic continue the conversation. So its the brain of the streaming layer.
@@ -671,6 +781,23 @@ class BedrockStreamManager:
                         "type": "string",
                         "description": "The reservation ID to update (e.g., 'RES-1001').",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["propose", "commit"],
+                        "description": (
+                            "Always call with 'propose' first: it returns the exact changes "
+                            "WITHOUT writing anything, so you can read them back to the guest. "
+                            "Only after the guest explicitly agrees, call again with 'commit' "
+                            "and the proposalId you were given. Defaults to 'propose'."
+                        ),
+                    },
+                    "proposalId": {
+                        "type": "string",
+                        "description": (
+                            "Required for mode='commit'. Use the exact proposalId returned by "
+                            "the preceding 'propose' call. Never invent one."
+                        ),
+                    },
                     "newRoomType": {
                         "type": "string",
                         "description": "New room type to set (e.g., 'King Deluxe'). Optional."
@@ -737,8 +864,11 @@ class BedrockStreamManager:
                                 "toolSpec": {
                                     "name": "updateReservationTool",
                                     "description": (
-                                        "Use this tool to update an existing reservation's room type and/or add a special request. "
-                                        "Only use it after the guest clearly confirms what they want to change."
+                                        "Update an existing reservation. This is a TWO-STEP tool. "
+                                        "Step 1: call with mode='propose' - it writes nothing and returns the exact "
+                                        "changes plus a proposalId. Read those changes back to the guest verbatim. "
+                                        "Step 2: only if the guest agrees, call with mode='commit' and that proposalId. "
+                                        "Nothing is saved until the commit call succeeds."
                                     ),
                                     "inputSchema": {
                                         "json": update_reservation_tool_schema
@@ -788,6 +918,13 @@ class BedrockStreamManager:
         self.stream_response = None # Will hold the active Bedrock streaming connection/response object once the bidirectional stream is established.
         self.is_active = False # Indicates whether the voice session is currently active. When False, background tasks should stop processing.
         self.barge_in = False # Flag indicating whether the user has interrupted the assistant while it is speaking. Used to stop or flush the current audio playback.
+
+        # Optional queue of structured UI events (transcripts, tool activity,
+        # agent state). The terminal client leaves this as None and nothing is
+        # produced; server.py assigns a queue and drains it to the browser.
+        # Keeping it opt-in means the terminal path is unchanged, and an
+        # unread queue can never grow without bound.
+        self.ui_events = None
         self.bedrock_client = None # Placeholder for the Amazon Bedrock runtime client. It will be initialized later and used to communicate with Nova Sonic. Audio playback components
 
         # Audio playback components
@@ -811,6 +948,22 @@ class BedrockStreamManager:
         # Add tracking for in-progress tool calls
         self.pending_tool_tasks = {}  # keeps track of active asynchronous tool executions so they can be monitored or canceled if necessary (e.g., during a barge-in or session termination).
 
+
+    def emit_ui_event(self, event_type, **fields):
+        """
+        Publish a structured event for the browser UI.
+
+        A no-op when no queue is attached (the terminal client), so this can be
+        called freely from the response loop without branching at each site.
+        put_nowait is used deliberately: emitting must never block the audio
+        path, and a dropped UI event is preferable to stalled speech.
+        """
+        if self.ui_events is None:
+            return
+        try:
+            self.ui_events.put_nowait({"type": event_type, **fields})
+        except asyncio.QueueFull:
+            pass                                # UI is behind; drop rather than stall audio.
 
     def _initialize_client(self):
         """Initailize the Bedrock client."""
@@ -853,11 +1006,13 @@ class BedrockStreamManager:
                 "AFTER ID VERIFICATION:"
                 "1. If they ask about an upcoming stay, room details, or balance, call checkReservationStatusTool "
                 "   with their guestName. Use includePastStays=true only if they ask about previous stays."
-                "2. If they want to change their room type, change their check-out date, or add a special "
-                "   request (e.g. extra pillows, high floor, feather-free pillows), first identify the correct "
-                "   reservationId using checkReservationStatusTool, confirm it with the guest, then call "
-                "   updateReservationTool. Use newCheckOutDate for date changes - never record a date change "
-                "   as a special request."
+                "2. To change a room type, check-out date, or add a special request: first find the "
+                "   reservationId with checkReservationStatusTool. Then call updateReservationTool with "
+                "   mode='propose' - this saves nothing. Read the returned changes back to the guest in "
+                "   plain language and ask them to confirm. Only when they clearly agree, call the tool "
+                "   again with mode='commit' and the proposalId you were given."
+                "   Never say a change is saved until the commit call has returned success."
+                "   Use newCheckOutDate for date changes - never record a date change as a special request."
                 "3. Only report a change as done if the tool returned success. If the tool returns an error, "
                 "   tell the guest exactly what failed. Never claim an update succeeded when it did not."
                 "4. After updating, explain clearly what changed (e.g. new room type, new check-out date, or the special request you added)."
@@ -1192,6 +1347,10 @@ class BedrockStreamManager:
                                         # current assistant audio should be stopped.
                                         self.barge_in = True
 
+                                        # Let the UI reflect the interruption too.
+                                        self.emit_ui_event("state", value="listening",
+                                                           reason="barge_in")
+
                                     # Print assistant text only when assistant-text
                                     # display is enabled.
                                     if (
@@ -1200,9 +1359,27 @@ class BedrockStreamManager:
                                     ):
                                         print(f"Assistant: {text_content}")
 
+                                        # The interruption marker is protocol noise,
+                                        # not speech - never show it as a transcript line.
+                                        if '"interrupted"' not in text_content:
+                                            self.emit_ui_event(
+                                                "transcript",
+                                                role="assistant",
+                                                text=text_content,
+                                                final=True,
+                                            )
+                                            self.emit_ui_event("state", value="speaking")
+
                                     # Print the user's transcribed speech.
                                     elif role == "USER":
                                         print(f"User: {text_content}")
+                                        self.emit_ui_event(
+                                            "transcript",
+                                            role="user",
+                                            text=text_content,
+                                            final=True,
+                                        )
+                                        self.emit_ui_event("state", value="processing")
 
                                 # audioOutput contains Nova Sonic's generated speech.
                                 elif "audioOutput" in json_data["event"]:
@@ -1370,10 +1547,59 @@ class BedrockStreamManager:
         try:
             debug_print(f"Starting tool execution: {tool_name}")
 
+            # Announce the call before running it, so the UI can show the tool
+            # as in-flight rather than only after it finishes. Arguments are
+            # sanitised: the model passes a spoken date of birth here.
+            started = time.perf_counter()
+            # tool_content["content"] arrives as a JSON *string*, so it must be
+            # parsed before sanitising - handing the raw string to the sanitiser
+            # returns it untouched and leaks the spoken date of birth to the UI.
+            raw_args = tool_content.get("content", {})
+            if isinstance(raw_args, str):
+                try:
+                    raw_args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    raw_args = {"raw": "[unparseable]"}   # Never emit an unparsed blob.
+
+            self.emit_ui_event(
+                "tool_call",
+                id=tool_use_id,
+                name=tool_name,
+                args=sanitize_for_ui(raw_args),
+            )
+            self.emit_ui_event("state", value="executing_tool", tool=tool_name)
+
             # Process the tool - this doesn't block the event loop
             tool_result = await self.tool_processor.process_tool_async(
                 tool_name, tool_content
             )
+
+            latency_ms = round((time.perf_counter() - started) * 1000, 1)
+
+            # A tool that returns an "error" key ran successfully but refused -
+            # a rejected room type or an unverified caller. That is a failed
+            # outcome from the guest's point of view, so report it as one.
+            ok = not (isinstance(tool_result, dict) and tool_result.get("error"))
+
+            self.emit_ui_event(
+                "tool_result",
+                id=tool_use_id,
+                name=tool_name,
+                ok=ok,
+                latencyMs=latency_ms,
+                result=sanitize_for_ui(tool_result),
+            )
+
+            # A proposal is the read-back step of a two-phase write. Surface it
+            # separately so the UI can render a confirmation card rather than
+            # burying it in the tool trace.
+            if isinstance(tool_result, dict) and tool_result.get("mode") == "proposal":
+                self.emit_ui_event(
+                    "proposal",
+                    proposalId=tool_result.get("proposalId"),
+                    reservationId=tool_result.get("reservationId"),
+                    changes=sanitize_for_ui(tool_result.get("changes", [])),
+                )
 
             # Send the result sequence
             await self.send_tool_start_event(content_name, tool_use_id)
@@ -1383,6 +1609,10 @@ class BedrockStreamManager:
             debug_print(f"Tool execution complete: {tool_name}")
         except Exception as e:
             debug_print(f"Error executing tool {tool_name}: {str(e)}")
+            self.emit_ui_event(
+                "tool_result", id=tool_use_id, name=tool_name,
+                ok=False, latencyMs=None, result={"error": str(e)},
+            )
             # Try to send an error response if possible
             try:
                 error_result = {"error": f"Tool execution failed: {str(e)}"}

@@ -224,6 +224,21 @@ async def pump_bedrock_to_browser(websocket: WebSocket, stream_manager: BedrockS
             await websocket.send_bytes(audio_bytes)
 
 
+async def pump_events_to_browser(websocket: WebSocket, stream_manager: BedrockStreamManager):
+    """
+    Forward structured UI events (transcripts, tool activity, agent state) to
+    the browser as JSON text frames.
+
+    These travel on the same socket as the audio but as TEXT rather than binary,
+    so the client can tell them apart without any framing of our own. They are
+    deliberately kept on a separate task from the audio pump: a slow UI must
+    never delay speech.
+    """
+    while True:
+        event = await stream_manager.ui_events.get()    # Wait for the next event.
+        await websocket.send_text(json.dumps(event))    # Text frame = control/UI data.
+
+
 @app.websocket("/ws")
 async def voice_session(websocket: WebSocket):
     """
@@ -240,6 +255,11 @@ async def voice_session(websocket: WebSocket):
         model_id="amazon.nova-sonic-v1:0",
         region="us-east-1",
     )
+
+    # Attach a bounded event queue. Bounded on purpose: if the browser stops
+    # reading, events are dropped rather than accumulating until the process
+    # runs out of memory. The terminal client leaves this as None.
+    stream_manager.ui_events = asyncio.Queue(maxsize=256)
 
     try:
         # Open the bidirectional stream to Bedrock and send the initialization
@@ -260,6 +280,7 @@ async def voice_session(websocket: WebSocket):
         tasks = [
             asyncio.create_task(pump_browser_to_bedrock(websocket, stream_manager)),
             asyncio.create_task(pump_bedrock_to_browser(websocket, stream_manager)),
+            asyncio.create_task(pump_events_to_browser(websocket, stream_manager)),
         ]
 
         # Wait for whichever finishes first. Normally that is the receive pump,
