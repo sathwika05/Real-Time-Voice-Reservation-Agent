@@ -2,6 +2,8 @@
 
 A voice-driven hotel front-desk agent built on **Amazon Nova Sonic**. You speak to it like a receptionist: it verifies your identity, looks up your reservation in DynamoDB, and modifies it — and you can interrupt it mid-sentence.
 
+Runs two ways from one agent core: a **terminal client** using a local microphone, and a **browser client** over WebSockets.
+
 **Median response latency: ~0.6s.** You can talk over it.
 
 ---
@@ -24,25 +26,26 @@ That architectural difference is why response latency here is measured in **hund
 
 ```mermaid
 flowchart LR
-    Mic["🎤 Microphone"] --> AS["AudioStreamer<br/>PyAudio"]
+    Mic["🎤 Local mic"] --> AS["AudioStreamer<br/>PyAudio"]
+    Browser["🌐 Browser<br/>AudioWorklet"] <-->|"WebSocket"| WS["server.py<br/>FastAPI"]
     AS -->|"add_audio_chunk"| BSM["BedrockStreamManager"]
-    BSM <-->|"bidirectional stream"| NS["Amazon Nova Sonic<br/>Bedrock"]
+    WS -->|"add_audio_chunk"| BSM
+    BSM <-->|"bidirectional stream"| NS["Amazon Nova Sonic"]
     BSM -->|"toolUse"| TP["ToolProcessor"]
     TP <--> DDB[("DynamoDB<br/>Guests · Reservations")]
     TP -->|"toolResult"| BSM
     BSM -->|"audio_output_queue"| AS
-    AS --> Spk["🔊 Speaker"]
+    BSM -->|"audio_output_queue"| WS
 ```
-
-Three components, deliberately decoupled:
 
 | Component | Responsibility |
 |---|---|
-| `AudioStreamer` | The **only** code touching audio hardware. Captures mic input, plays model output. |
-| `BedrockStreamManager` | The Nova Sonic event protocol — session lifecycle, audio framing, tool handshake, barge-in. |
-| `ToolProcessor` | Three DynamoDB-backed tools. Runs blocking AWS calls in an executor so the audio loop never stalls. |
+| `BedrockStreamManager` | Nova Sonic event protocol — session lifecycle, audio framing, tool handshake, barge-in |
+| `ToolProcessor` | Three DynamoDB-backed tools, plus identity verification. Blocking AWS calls run in an executor so the audio loop never stalls |
+| `AudioStreamer` | Terminal transport — local microphone and speaker via PyAudio |
+| `server.py` | Browser transport — the same agent over a WebSocket |
 
-`BedrockStreamManager` never imports PyAudio. It exposes exactly two seams — `add_audio_chunk()` in, `audio_output_queue` out — so the transport can be swapped (browser WebSocket, telephony stream) without touching agent logic.
+The agent core never imports PyAudio. It exposes exactly two seams — `add_audio_chunk()` in, `audio_output_queue` out — which is why a second transport could be added without touching agent logic. A telephony transport (Twilio, Amazon Connect) would attach the same way.
 
 ## Audio pipeline
 
@@ -51,57 +54,42 @@ Three components, deliberately decoupled:
 | Input (mic → model) | 16,000 Hz | mono PCM16 (LPCM), base64 | 1024 frames ≈ **64 ms** |
 | Output (model → speaker) | 24,000 Hz | mono PCM16 (LPCM), base64 | 1024 frames |
 
-Both directions are queue-buffered. The microphone callback runs on PyAudio's own thread and hands bytes to the asyncio loop via `run_coroutine_threadsafe`, so **audio capture never blocks on the network**.
+Both directions are queue-buffered, so audio capture never blocks on the network.
+
+Two details the browser transport required:
+
+**Explicit resampling.** Browsers may ignore a requested 16 kHz `AudioContext` and return their native 48 kHz. Sending those samples labelled as 16 kHz makes Nova Sonic hear speech stretched threefold, and transcription collapses. The worklet reads the real rate at runtime and resamples itself.
+
+**Real-time pacing.** `output_stream.write()` blocks in the terminal version, throttling playback to real time. A WebSocket does not. Nova Sonic generates far faster than speech plays, so forwarding on arrival parks tens of seconds of audio in the browser — and an interruption then has nothing server-side left to discard. The server sends no faster than the audio plays.
 
 ### Barge-in
 
-When Nova Sonic detects the guest speaking over the assistant, it emits an interruption signal. The handler sets a `barge_in` flag; the playback loop drains the queued assistant audio and stops mid-word, rather than talking over the guest.
-
-This is what makes the agent feel conversational instead of like an IVR menu.
-
-## Conversation flow
-
-```mermaid
-sequenceDiagram
-    participant G as Guest
-    participant A as Agent
-    participant N as Nova Sonic
-    participant D as DynamoDB
-
-    G->>A: "My name is Anna Smith, DOB June 5th 1991"
-    A->>N: audioInput (16kHz PCM, 64ms chunks)
-    N->>A: toolUse → checkGuestProfileTool
-    A->>D: get_item(guestName)
-    D->>A: profile + stored DOB
-    A->>N: toolResult
-    Note over N: compares spoken DOB<br/>against stored DOB
-    N->>A: audioOutput (24kHz PCM)
-    A->>G: "Thank you, Anna."
-    G->>A: "Change my room to a suite"
-    N->>A: toolUse → checkReservationStatusTool
-    N->>A: toolUse → updateReservationTool
-    A->>G: "Your room has been updated."
-```
+When the guest speaks over the assistant, queued audio is discarded and playback stops mid-word. The browser client can optionally detect speech locally for instant cutoff, rather than waiting for the round trip to AWS — off by default, since on speakers the microphone also hears the agent and it would silence itself.
 
 ## Identity verification
 
-The agent will not disclose **any** reservation or billing detail until it has:
+The agent will not disclose any reservation or billing detail until `checkGuestProfileTool` confirms the spoken date of birth matches the stored one.
 
-1. Asked for full name and date of birth
-2. Looked the guest up via `checkGuestProfileTool`
-3. Confirmed the spoken DOB matches the stored DOB
+**This is enforced in Python, not in the system prompt** — and that distinction came from testing. The original design returned the stored DOB and asked the model in its prompt to compare and refuse. Under test the model confirmed identity for a wrong date of birth, and then for a guest who did not exist in the database at all. Asked directly whether it had checked, it said yes.
 
-A voice agent that reads out a booking to whoever calls is a data breach. The gate is enforced through tool results rather than trusting the model to remember a rule.
+Enforcement now lives in the tool:
+
+- The comparison happens in code; the model receives only a `verified` boolean
+- On mismatch, no profile data is returned, and the stored DOB is never echoed back — otherwise a caller could probe for it by guessing
+- The other two tools refuse to run until a per-session verification flag is set
+- Updates additionally confirm the reservation belongs to the verified guest
+
+A prompt-level rule that holds most of the time is worse than none, because it looks like it works.
 
 ## Tools
 
 | Tool | Input | Purpose |
 |---|---|---|
-| `checkGuestProfileTool` | `guestName` | Identity verification; returns DOB, loyalty tier, preferences |
+| `checkGuestProfileTool` | `guestName`, `dateOfBirth` | Verifies identity by comparing the spoken DOB against records |
 | `checkReservationStatusTool` | `guestName`, `includePastStays?` | Upcoming stay, room details, balance due |
-| `updateReservationTool` | `reservationId`, `newRoomType?`, `newSpecialRequest?` | Change room type or append a special request |
+| `updateReservationTool` | `reservationId`, `newRoomType?`, `newCheckOutDate?`, `newSpecialRequest?` | Change room type, check-out date, or add a request |
 
-Tool calls run in a thread pool executor — a slow DynamoDB round-trip cannot stall the audio stream.
+Room types are validated against a known list, and check-out dates must fall after check-in. Tool calls run in a thread pool executor so a slow DynamoDB round-trip cannot stall the audio stream.
 
 ## Measured performance
 
@@ -117,26 +105,44 @@ From instrumented session logs across 6 live conversations:
 
 Latency is measured from the final user-speech transcript event to the model's next content-start. Mid-utterance pauses that Nova Sonic segments into separate user turns are excluded — counting them would inflate the figure.
 
+## What testing revealed
+
+Adding the browser transport pushed conversations into code paths the terminal sessions had never reached. Every defect below was found that way:
+
+| Defect | Consequence |
+|---|---|
+| `checkoutDate` vs `checkOutDate` typo | Every reservation classified as a past stay, so `updateReservationTool` was unreachable and had never once run |
+| Verification only requested in the prompt | Model confirmed identity for a wrong DOB, and for a nonexistent guest |
+| No date parameter on the update tool | Asked to change a check-out date, the model appended a special request and reported the date change as done |
+| No input validation | A single `.` was accepted and written into a live booking as a room type |
+| Unpaced WebSocket output | Tens of seconds of audio buffered in the browser; interruption had nothing left to discard |
+
+The first one masked the rest: with no reservation ever found, conversations dead-ended before reaching any modification path.
+
 ## Project structure
 
 ```
 backend/
-  hotel_agent.py   # Agent core: ToolProcessor, BedrockStreamManager, AudioStreamer
-  db_setup.py      # Creates and seeds the two DynamoDB tables
-  app.py           # Streamlit dashboard — parses session logs into events and token usage
+  hotel_agent.py        # Agent core: ToolProcessor, BedrockStreamManager, AudioStreamer
+  server.py             # FastAPI WebSocket bridge for the browser client
+  static/
+    index.html          # Browser client
+    mic-processor.js    # AudioWorklet: capture, resample, voice detection
+  db_setup.py           # Creates and seeds the two DynamoDB tables
+  app.py                # Streamlit dashboard — parses session logs
   requirements.txt
 ```
 
 ## Setup
 
-**Prerequisites:** Python 3.10+, an AWS account with Bedrock access to `amazon.nova-sonic-v1:0` in `us-east-1`, and a working microphone.
+**Prerequisites:** Python 3.10+, an AWS account with Bedrock access to `amazon.nova-sonic-v1:0` in `us-east-1`, and a microphone.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
 ```
 
-Configure AWS credentials — the agent reads them from your environment or `~/.aws/credentials`. **No credentials belong in source.**
+Configure AWS credentials — read from your environment or `~/.aws/credentials`. **No credentials belong in source.**
 
 ```bash
 aws configure
@@ -149,19 +155,21 @@ cd backend
 python db_setup.py
 ```
 
-Run the agent:
+### Run in the terminal
 
 ```bash
 python hotel_agent.py            # add --debug for timing traces
 ```
 
-Speak into your microphone. Press Enter to stop.
-
-Optional — the session dashboard:
+### Run in the browser
 
 ```bash
-streamlit run app.py
+uvicorn server:app --port 8010   # add --reload while developing
 ```
+
+Open <http://127.0.0.1:8010>. Set `DEBUG=1` for the full event trace.
+
+Microphone access requires a secure origin: `localhost` and `127.0.0.1` qualify, any other host needs HTTPS.
 
 ## Try it
 
@@ -172,21 +180,22 @@ Seeded guests:
 | Anna Smith | 1991-06-05 | Upcoming, fully paid |
 | Mark Johnson | 1985-01-21 | Upcoming with balance due, plus a past stay |
 
-A conversation that exercises all three tools:
+A conversation exercising all three tools:
 
-> "Hi, my name is Anna Smith and my date of birth is June fifth, nineteen ninety-one."
+> "My name is Anna Smith."
+> "My date of birth is June fifth, nineteen ninety-one."
 > "Can you check my upcoming reservation?"
-> "Could you change my room type to a suite?"
+> "Change my check-out date to September first."
 
-Then try interrupting mid-response.
+Then try interrupting mid-response, or giving a wrong date of birth to see the gate refuse.
 
 ## Current limitations
 
-- **Runs locally only.** `AudioStreamer` requires a physical microphone and speaker, so it will not run on a headless server as-is. Swapping the transport is the intended path to browser or telephony deployment.
-- **In-memory session state.** Conversation state lives on the `BedrockStreamManager` instance and is lost on exit. Nothing is persisted between runs.
-- **No automated tests.** Behaviour has been verified through manual sessions; there is no scripted scenario suite yet.
-- **Single-turn prompt lifecycle.** Each run opens one session and one prompt; multi-session handling is not implemented.
+- **In-memory session state.** Conversation and verification state live on the `BedrockStreamManager` instance and are lost on exit. Nothing is persisted between runs.
+- **No automated tests.** The tool layer has been verified against stubbed tables; there is no scripted end-to-end scenario suite.
+- **Single prompt lifecycle.** Each run opens one session and one prompt; Nova Sonic closes the stream after a long idle gap and the client must reconnect.
+- **Not deployed.** Runs locally only. A hosted deployment would need HTTPS for microphone access and an IAM instance role in place of local credentials.
 
 ## Built with
 
-Amazon Nova Sonic · AWS Bedrock Runtime (bidirectional streaming) · Python `asyncio` · PyAudio · DynamoDB · Streamlit
+Amazon Nova Sonic · AWS Bedrock Runtime (bidirectional streaming) · Python `asyncio` · FastAPI · PyAudio · Web Audio API · DynamoDB · Streamlit
