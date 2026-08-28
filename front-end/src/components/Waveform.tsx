@@ -5,6 +5,10 @@ import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 
 const BARS = 24;
 
+// Minimum bar height as a fraction of the track. Below roughly a fifth the
+// bars read as a row of dots rather than a quiet waveform.
+const MIN_SCALE = 0.2;
+
 /**
  * Audio-reactive waveform.
  *
@@ -49,7 +53,7 @@ export function Waveform({
       const target = a ? Math.min(1, l * 3.2) : 0;
       smoothed.current += (target - smoothed.current) * 0.3;
 
-      heights.current = [...heights.current.slice(1), Math.max(0.06, smoothed.current)];
+      heights.current = [...heights.current.slice(1), Math.max(MIN_SCALE, smoothed.current)];
 
       for (let i = 0; i < BARS; i++) {
         const el = bars.current[i];
@@ -80,8 +84,8 @@ export function Waveform({
     );
   }
 
-  // At rest, 24 bars scaled to 6% render as a row of dots that reads as a
-  // rendering fault. A single hairline is quieter and clearly deliberate.
+  // At rest a single hairline is quieter and more clearly deliberate than a
+  // row of stubby bars.
   if (!active) {
     return (
       <div className="flex h-10 items-center justify-center" aria-hidden="true">
@@ -100,7 +104,7 @@ export function Waveform({
             bars.current[i] = el;
           }}
           className={`h-full w-[3px] rounded-full ${active ? color : "bg-line"}`}
-          style={{ transform: "scaleY(0.06)" }}
+          style={{ transform: `scaleY(${MIN_SCALE})` }}
         />
       ))}
     </div>

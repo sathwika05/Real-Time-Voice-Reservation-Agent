@@ -8,9 +8,9 @@ import { Waveform } from "./Waveform";
 /**
  * The microphone control and its state readout.
  *
- * Deliberately the most prominent element on the page: in a voice interface the
- * user's first question is always "is it listening?", and the answer must be
- * unmissable.
+ * When idle the button is filled with the primary colour: starting a session is
+ * the page's single call to action, and an outline-only circle read as disabled
+ * rather than inviting.
  */
 export function VoiceDock({
   state,
@@ -32,68 +32,73 @@ export function VoiceDock({
   const meta = STATE_META[state];
   const idle = state === "disconnected" || state === "ended" || state === "mic_denied";
   const agentTalking = state === "speaking";
-
+  const listening = state === "listening";
   const Icon = meta.Icon;
 
   return (
-    <div className="border-t border-line bg-surface px-4 pb-[env(safe-area-inset-bottom)] pt-4">
-      <div className="mx-auto flex max-w-[720px] flex-col items-center gap-3">
-        {/* Fixed height so the dock never shifts as the waveform changes. */}
-        <div className="h-10 w-full max-w-[280px]">
-          <Waveform
-            level={agentTalking ? agentLevel : micLevel}
-            active={state === "listening" || agentTalking}
-            tone={agentTalking ? "brand" : "live"}
-          />
-        </div>
+    <div className="flex flex-col items-center gap-4 border-t border-line px-4 py-6">
+      {/* Fixed height so the dock never shifts as the waveform changes. */}
+      <div className="h-10 w-full max-w-[280px]">
+        <Waveform
+          level={agentTalking ? agentLevel : micLevel}
+          active={listening || agentTalking}
+          tone={agentTalking ? "brand" : "live"}
+        />
+      </div>
 
+      <div className="flex flex-col items-center gap-3">
         <button
           type="button"
           onClick={idle ? onStart : onStop}
           aria-pressed={!idle}
           aria-label={idle ? "Start voice session" : "End voice session"}
-          className={`flex size-16 items-center justify-center rounded-full border-2 transition-colors duration-160 sm:size-[72px]
-            ${idle ? "bg-surface " + TONE_RING[meta.tone] : "bg-brand border-brand"}
-            ${state === "listening" ? "animate-listening border-live" : ""}
-            hover:opacity-90`}
+          className={`group flex size-20 items-center justify-center rounded-full transition-all duration-200
+            ${
+              idle
+                ? "bg-brand text-brand-fg shadow-[var(--shadow-md)] hover:bg-brand-hover"
+                : `border-2 bg-surface ${TONE_RING[meta.tone]}`
+            }
+            ${listening ? "animate-listening border-live" : ""}`}
         >
           {idle ? (
-            <Mic className="size-6 text-ink" aria-hidden="true" />
+            <Mic className="size-7" aria-hidden="true" />
           ) : (
-            <Square className="size-5 fill-brand-fg text-brand-fg" aria-hidden="true" />
+            <Square className="size-6 fill-ink text-ink" aria-hidden="true" />
           )}
         </button>
 
-        {/* The label is the accessible source of truth for state, which is why
-            the waveform and the pulse can both be purely decorative. */}
+        {/* The visible label IS the live region - a separate sr-only copy
+            announced every state change twice. */}
         <div
-          // The visible label IS the live region. Announcing from a separate
-          // sr-only node duplicated every state change for screen readers.
           role="status"
           aria-live="polite"
-          className="flex min-h-[44px] flex-col items-center gap-1 text-center"
+          className="flex min-h-[40px] flex-col items-center gap-0.5 text-center"
         >
-          <p className={`flex items-center gap-1 text-[13px] font-medium ${TONE_TEXT[meta.tone]}`}>
-            <Icon className={`size-4 ${meta.busy ? "animate-spin" : ""}`} aria-hidden="true" />
-            {meta.label}
+          <p className={`flex items-center gap-1.5 text-sm font-medium ${idle ? "text-ink" : TONE_TEXT[meta.tone]}`}>
+            {!idle && (
+              <Icon className={`size-4 ${meta.busy ? "animate-spin" : ""}`} aria-hidden="true" />
+            )}
+            {idle ? "Tap to speak" : meta.label}
           </p>
-          {meta.hint && <p className="text-xs text-ink-muted">{meta.hint}</p>}
+          {(meta.hint || idle) && (
+            <p className="text-xs text-ink-muted">
+              {idle ? "or press M" : meta.hint}
+            </p>
+          )}
         </div>
-
-        {/* The label carries the hit area: py-3 brings the whole control to
-            44px tall even though the box itself is small. */}
-        <label className="flex min-h-[44px] cursor-pointer items-center gap-2 px-2 py-3 text-xs text-ink-muted">
-          <input
-            type="checkbox"
-            checked={fastInterrupt}
-            onChange={(e) => onToggleFast(e.target.checked)}
-            className="size-5 accent-[var(--primary)]"
-          />
-          {/* Off by default: on speakers the mic hears the agent, and the agent
-              would cut itself off mid-reply. */}
-          Fast interrupt (headphones only)
-        </label>
       </div>
+
+      {/* Off by default: on speakers the mic hears the agent, and the agent
+          would cut itself off mid-reply. */}
+      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 px-2 py-3 text-xs text-ink-muted">
+        <input
+          type="checkbox"
+          checked={fastInterrupt}
+          onChange={(e) => onToggleFast(e.target.checked)}
+          className="size-4 accent-[var(--primary)]"
+        />
+        Fast interrupt (headphones only)
+      </label>
     </div>
   );
 }
