@@ -1,0 +1,211 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ===========================================================================
+   DESIGN TOKENS
+   Every text pair below was contrast-checked against its intended background.
+   The lowest ratio in light mode is --text-muted at 4.60:1; in dark mode
+   --text-muted at 6.23:1. All pass WCAG AA for normal text.
+   =========================================================================== */
+
+:root {
+  /* Surfaces - airy neutrals, not pure white, so cards can lift off the page */
+  --bg-canvas: #fbfbfd;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f4f5f7;
+
+  /* Borders. --border is decorative at 1.45:1 and must never be the only
+     indicator of a control. Anything that outlines an interactive element
+     uses --border-interactive, which is 3.06:1 and meets the non-text
+     contrast minimum. */
+  --border: #e4e6eb;
+  --border-interactive: #8a91a0;
+
+  /* Text - deep ink rather than pure black, which reads harsh on off-white */
+  --text-primary: #0f1115;   /* 18.28:1 */
+  --text-secondary: #4a5160; /*  7.71:1 */
+  --text-muted: #6b7385;     /*  4.60:1 */
+
+  /* Cobalt-indigo: the single action colour */
+  --primary: #3538cd;        /*  8.08:1 on white */
+  --primary-hover: #2b2da6;
+  --primary-subtle: #eef0ff;
+  --primary-fg: #ffffff;
+
+  /* Teal: successful tool execution and confirmed reservations */
+  --success: #0e7c6f;        /*  5.08:1 */
+  --success-subtle: #e6f5f3;
+
+  /* Cyan: live voice activity ONLY. Never used for anything static. */
+  --live: #0e7490;           /*  5.36:1 */
+  --live-subtle: #ecfeff;
+
+  --warning: #b54708;        /*  5.43:1 */
+  --warning-subtle: #fffaeb;
+  --danger: #b42318;         /*  6.57:1 */
+  --danger-subtle: #fef3f2;
+
+  /* Three shadows only - no heavy effects, no glassmorphism */
+  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow-sm: 0 2px 6px rgb(16 24 40 / 0.06);
+  --shadow-md: 0 8px 20px rgb(16 24 40 / 0.08);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+/* Dark palette. Roles stay identical - only the values swap - so no component
+   needs a dark-specific rule. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg-canvas: #0b0d12;
+    --bg-surface: #12151c;
+    --bg-subtle: #181c25;
+    --border: #252a35;
+    --border-interactive: #5a6373;   /* 3.02:1 */
+    --text-primary: #f2f4f8;         /* 17.65:1 */
+    --text-secondary: #a9b1c1;       /*  9.02:1 */
+    --text-muted: #8a92a4;           /*  6.23:1 */
+    --primary: #8b8dff;              /*  6.39:1 */
+    --primary-hover: #a5a7ff;
+    --primary-subtle: #1b1e3d;
+    --primary-fg: #0b0d12;
+    --success: #2ed3b7;              /*  9.67:1 */
+    --success-subtle: #10241f;
+    --live: #22ccee;                 /*  9.51:1 */
+    --live-subtle: #0c2129;
+    --warning: #fdb022;              /*  9.92:1 */
+    --warning-subtle: #2a1e08;
+    --danger: #f97066;               /*  6.56:1 */
+    --danger-subtle: #2a1210;
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 8px 20px rgb(0 0 0 / 0.35);
+  }
+}
+
+/* Explicit override wins over the system preference in both directions. */
+.dark {
+  --bg-canvas: #0b0d12;
+  --bg-surface: #12151c;
+  --bg-subtle: #181c25;
+  --border: #252a35;
+  --border-interactive: #5a6373;
+  --text-primary: #f2f4f8;
+  --text-secondary: #a9b1c1;
+  --text-muted: #8a92a4;
+  --primary: #8b8dff;
+  --primary-hover: #a5a7ff;
+  --primary-subtle: #1b1e3d;
+  --primary-fg: #0b0d12;
+  --success: #2ed3b7;
+  --success-subtle: #10241f;
+  --live: #22ccee;
+  --live-subtle: #0c2129;
+  --warning: #fdb022;
+  --warning-subtle: #2a1e08;
+  --danger: #f97066;
+  --danger-subtle: #2a1210;
+}
+
+/* Expose tokens as Tailwind utilities: bg-canvas, text-ink, border-subtle, ... */
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-subtle: var(--bg-subtle);
+  --color-line: var(--border);
+  --color-line-interactive: var(--border-interactive);
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+  --color-brand: var(--primary);
+  --color-brand-hover: var(--primary-hover);
+  --color-brand-subtle: var(--primary-subtle);
+  --color-brand-fg: var(--primary-fg);
+  --color-ok: var(--success);
+  --color-ok-subtle: var(--success-subtle);
+  --color-live: var(--live);
+  --color-live-subtle: var(--live-subtle);
+  --color-warn: var(--warning);
+  --color-warn-subtle: var(--warning-subtle);
+  --color-bad: var(--danger);
+  --color-bad-subtle: var(--danger-subtle);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* 8px base. 4 exists only for icon-to-label gaps. */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+  --spacing-12: 48px;
+  --spacing-16: 64px;
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Focus is never removed - only restyled. A 2px ring plus 2px offset stays
+     visible against both surface and canvas. */
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Pointer users do not need the ring on click, keyboard users do. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   MOTION
+   Nothing here loops decoratively. The listening pulse runs only while the
+   microphone is open, and the waveform is driven by real audio amplitude.
+   --------------------------------------------------------------------------- */
+
+@keyframes listening-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 8px color-mix(in srgb, var(--live) 0%, transparent); }
+}
+
+@keyframes row-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.animate-listening { animation: listening-pulse 1.5s ease-in-out infinite; }
+
+/* translateY + opacity only. Animating height would shift every row below. */
+.animate-row-enter { animation: row-enter 200ms cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* Reduced motion: state must remain fully legible with no movement at all.
+   The waveform swaps to a static level meter in the component itself. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

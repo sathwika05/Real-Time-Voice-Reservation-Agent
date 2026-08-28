@@ -2,7 +2,7 @@
 
 A voice-driven hotel front-desk agent built on **Amazon Nova Sonic**. You speak to it like a receptionist: it verifies your identity, looks up your reservation in DynamoDB, and modifies it — and you can interrupt it mid-sentence.
 
-Runs two ways from one agent core: a **terminal client** using a local microphone, and a **browser client** over WebSockets.
+Runs from one agent core through two transports: a **terminal client** using a local microphone, and a **Next.js web client** over WebSockets with a live transcript and a sanitized tool-call trace.
 
 **Median response latency: ~0.6s.** You can talk over it.
 
@@ -43,7 +43,8 @@ flowchart LR
 | `BedrockStreamManager` | Nova Sonic event protocol — session lifecycle, audio framing, tool handshake, barge-in |
 | `ToolProcessor` | Three DynamoDB-backed tools, plus identity verification. Blocking AWS calls run in an executor so the audio loop never stalls |
 | `AudioStreamer` | Terminal transport — local microphone and speaker via PyAudio |
-| `server.py` | Browser transport — the same agent over a WebSocket |
+| `server.py` | Browser transport — audio plus a structured event stream over one WebSocket |
+| `front-end/` | Next.js client — conversation, voice dock, and engineering trace |
 
 The agent core never imports PyAudio. It exposes exactly two seams — `add_audio_chunk()` in, `audio_output_queue` out — which is why a second transport could be added without touching agent logic. A telephony transport (Twilio, Amazon Connect) would attach the same way.
 
@@ -81,13 +82,21 @@ Enforcement now lives in the tool:
 
 A prompt-level rule that holds most of the time is worse than none, because it looks like it works.
 
+## Confirm before write
+
+Reservation changes are two-phase. `updateReservationTool` is called first with `mode="propose"`: it validates the change, returns a `from → to` diff and a `proposalId`, and **writes nothing**. Only after the guest agrees is it called with `mode="commit"` and that id.
+
+The read-back cannot be skipped, because there is no id to commit with until a proposal exists — and the commit replays the stored expression rather than re-reading the arguments, so what is saved is exactly what was read back. Proposals are single-use and scoped to one reservation and one session.
+
+This exists because the earlier design asked for confirmation in the system prompt, which is the same shape as the identity bug below: a request the model may simply not follow.
+
 ## Tools
 
 | Tool | Input | Purpose |
 |---|---|---|
 | `checkGuestProfileTool` | `guestName`, `dateOfBirth` | Verifies identity by comparing the spoken DOB against records |
 | `checkReservationStatusTool` | `guestName`, `includePastStays?` | Upcoming stay, room details, balance due |
-| `updateReservationTool` | `reservationId`, `newRoomType?`, `newCheckOutDate?`, `newSpecialRequest?` | Change room type, check-out date, or add a request |
+| `updateReservationTool` | `reservationId`, `mode`, `proposalId?`, `newRoomType?`, `newCheckOutDate?`, `newSpecialRequest?` | Propose or commit a change to room type, check-out date, or requests |
 
 Room types are validated against a known list, and check-out dates must fall after check-in. Tool calls run in a thread pool executor so a slow DynamoDB round-trip cannot stall the audio stream.
 
@@ -124,14 +133,37 @@ The first one masked the rest: with no reservation ever found, conversations dea
 ```
 backend/
   hotel_agent.py        # Agent core: ToolProcessor, BedrockStreamManager, AudioStreamer
-  server.py             # FastAPI WebSocket bridge for the browser client
-  static/
-    index.html          # Browser client
-    mic-processor.js    # AudioWorklet: capture, resample, voice detection
+  server.py             # FastAPI bridge: audio + structured UI events
+  static/               # Minimal test client (used to develop the transport)
   db_setup.py           # Creates and seeds the two DynamoDB tables
   app.py                # Streamlit dashboard — parses session logs
   requirements.txt
+
+front-end/               # Next.js 16 · TypeScript · Tailwind v4 · Lucide
+  src/lib/
+    types.ts             # The event contract shared with the backend
+    audio.ts             # Mic capture and scheduled speech playback
+    useVoiceSession.ts   # One state machine driving both panes
+    stateMeta.ts         # Icon + label + tone for every interface state
+  src/components/        # Header, SessionStrip, Transcript, VoiceDock,
+                         # Waveform, TracePanel, HowItWorks
+  public/mic-processor.js
 ```
+
+### Event contract
+
+The browser receives binary frames (24 kHz PCM) and JSON text frames on the same socket:
+
+```
+transcript    role, text, final
+tool_call     id, name, args          (sanitized)
+tool_result   id, ok, latencyMs, result
+proposal      proposalId, reservationId, changes[]
+state         listening | processing | speaking | executing_tool
+error         message
+```
+
+Tool arguments and results are redacted **server-side** — date of birth, email, and phone never reach the browser, so the trace panel cannot leak them even in a screen recording.
 
 ## Setup
 
@@ -163,11 +195,24 @@ python hotel_agent.py            # add --debug for timing traces
 
 ### Run in the browser
 
+Two processes. Backend:
+
 ```bash
-uvicorn server:app --port 8010   # add --reload while developing
+cd backend
+DEBUG=1 uvicorn server:app --port 8010 --reload
 ```
 
-Open <http://127.0.0.1:8010>. Set `DEBUG=1` for the full event trace.
+Frontend:
+
+```bash
+cd front-end
+npm install
+npm run dev
+```
+
+Open <http://127.0.0.1:3000>. The client connects to `ws://127.0.0.1:8010/ws`; override with `NEXT_PUBLIC_WS_URL`.
+
+The minimal test page at <http://127.0.0.1:8010> still works and is useful for isolating transport problems from UI ones.
 
 Microphone access requires a secure origin: `localhost` and `127.0.0.1` qualify, any other host needs HTTPS.
 
@@ -196,6 +241,15 @@ Then try interrupting mid-response, or giving a wrong date of birth to see the g
 - **Single prompt lifecycle.** Each run opens one session and one prompt; Nova Sonic closes the stream after a long idle gap and the client must reconnect.
 - **Not deployed.** Runs locally only. A hosted deployment would need HTTPS for microphone access and an IAM instance role in place of local credentials.
 
+## Accessibility
+
+- All colour tokens meet WCAG AA in light and dark mode; ratios are recorded beside each token in `globals.css`
+- Every state carries an icon and a label, never colour alone
+- The transcript is a polite live region receiving final lines only, so screen readers are not flooded by partial speech
+- The microphone is a real button with `aria-pressed`, operable by keyboard, with `M` as a shortcut
+- Touch targets are at least 44×44
+- `prefers-reduced-motion` replaces the waveform with a static level meter and disables the listening pulse — no state depends on movement
+
 ## Built with
 
-Amazon Nova Sonic · AWS Bedrock Runtime (bidirectional streaming) · Python `asyncio` · FastAPI · PyAudio · Web Audio API · DynamoDB · Streamlit
+Amazon Nova Sonic · AWS Bedrock Runtime (bidirectional streaming) · Python `asyncio` · FastAPI · Next.js · TypeScript · Tailwind CSS · Lucide · Web Audio API · DynamoDB

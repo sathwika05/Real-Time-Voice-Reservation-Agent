@@ -22,6 +22,11 @@ credentials
 # Logs & session data
 *.log
 
+# Test/debug artifacts
+.playwright-mcp/
+*.png
+!public/**/*.png
+
 # OS / editor
 .DS_Store
 .vscode/
