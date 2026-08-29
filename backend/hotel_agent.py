@@ -1307,21 +1307,31 @@ class BedrockStreamManager:
                                                 content_start["additionalModelFields"]
                                             )
 
-                                            # Check whether this response is speculative
-                                            # content generated before final confirmation.
-                                            if (
-                                                additional_fields.get("generationStage")
-                                                == "SPECULATIVE"
-                                            ):
-                                                debug_print(
-                                                    "Speculative content detected"
-                                                )
+                                            # Nova Sonic emits each assistant utterance
+                                            # twice: once SPECULATIVE, while the audio is
+                                            # being spoken, and once FINAL afterwards.
+                                            # Both carry the same words.
+                                            #
+                                            # Showing both printed every line twice. And
+                                            # because two utterances can be in flight at
+                                            # once the copies interleave - A, B, A, B -
+                                            # so no consecutive-duplicate filter
+                                            # downstream can remove them.
+                                            #
+                                            # We keep the speculative pass: it is the text
+                                            # matching the audio the guest is hearing, and
+                                            # it arrives first, which is the whole point of
+                                            # a speech-to-speech pipeline.
+                                            stage = additional_fields.get("generationStage")
 
-                                                # Allow assistant text to be printed.
-                                                self.display_assistant_text = True
-                                            else:
-                                                # Allow normal assistant text to be printed.
-                                                self.display_assistant_text = True
+                                            if stage is not None:
+                                                self.display_assistant_text = (
+                                                    stage == "SPECULATIVE"
+                                                )
+                                                debug_print(
+                                                    f"Generation stage: {stage}, "
+                                                    f"display={self.display_assistant_text}"
+                                                )
 
                                         # Handle malformed JSON inside additionalModelFields.
                                         except json.JSONDecodeError:
