@@ -27,6 +27,20 @@ export interface StateMeta {
   busy?: boolean;      // Spinner instead of a static icon.
 }
 
+/**
+ * States with no session to end: nothing was started, or it is already over.
+ *
+ * Every other state - including connecting, reconnecting and requesting_mic -
+ * has a socket or a permission prompt in flight that the user must be able to
+ * abandon. Shared by the dock and the header so the two controls cannot
+ * disagree about whether a session exists.
+ */
+const IDLE: SessionState[] = ["disconnected", "ended", "mic_denied"];
+
+export function isIdle(state: SessionState): boolean {
+  return IDLE.includes(state);
+}
+
 export const STATE_META: Record<SessionState, StateMeta> = {
   disconnected: { label: "Not connected", Icon: WifiOff, tone: "neutral" },
   connecting: { label: "Connecting…", Icon: Loader2, tone: "brand", busy: true },

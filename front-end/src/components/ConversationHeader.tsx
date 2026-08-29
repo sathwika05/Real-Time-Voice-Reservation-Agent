@@ -2,7 +2,7 @@
 
 import { AudioLines, LogOut, RotateCcw, ShieldCheck, ShieldQuestion } from "lucide-react";
 import type { SessionState } from "@/lib/types";
-import { STATE_META, TONE_TEXT } from "@/lib/stateMeta";
+import { isIdle, STATE_META, TONE_TEXT } from "@/lib/stateMeta";
 
 const LIVE: SessionState[] = [
   "listening",
@@ -21,11 +21,13 @@ const LIVE: SessionState[] = [
 export function ConversationHeader({
   state,
   guest,
+  stats,
   onRestart,
   onEnd,
 }: {
   state: SessionState;
   guest: string | null;
+  stats: { calls: number; median: number | null };
   onRestart: () => void;
   onEnd: () => void;
 }) {
@@ -40,9 +42,32 @@ export function ConversationHeader({
         </span>
 
         <div className="min-w-0 flex-1">
-          <p className="text-[15px] font-semibold leading-tight text-ink">Front Desk</p>
-          <p className="text-[13px] text-ink-muted">Hotel reservation assistant</p>
+          {/* Sans, like the headline below it. Mono stays for the things that
+              are data - ids, latencies, field names - where the fixed width
+              earns its keep. Used as a display face it made the card speak in
+              two voices at once. */}
+          <p className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Front desk</p>
+          <p className="text-[13px] text-ink-muted">Voice reservations · Nova Sonic</p>
         </div>
+
+        {/* Latency is this product's whole thesis, so the numbers are content,
+            not a footnote. */}
+        {stats.calls > 0 && (
+          <dl className="hidden items-center gap-5 border-l border-line pl-5 sm:flex">
+            <div>
+              <dt className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+                Median
+              </dt>
+              <dd className="font-mono text-[15px] text-ink">{stats.median}ms</dd>
+            </div>
+            <div>
+              <dt className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+                Calls
+              </dt>
+              <dd className="font-mono text-[15px] text-ink">{stats.calls}</dd>
+            </div>
+          </dl>
+        )}
 
         <div className="flex items-center gap-2">
           <button
@@ -56,7 +81,11 @@ export function ConversationHeader({
           <button
             type="button"
             onClick={onEnd}
-            disabled={!live}
+            // Not `!live`: that only covered the states where the agent is
+            // actively conversing, so while connecting, reconnecting, waiting
+            // on the mic prompt, or sitting in an error there was no way to
+            // hang up - the dock's stop button worked but this one did not.
+            disabled={isIdle(state)}
             className="flex min-h-[40px] items-center gap-1.5 rounded-md border border-line px-3 text-[13px] text-ink-secondary transition-colors duration-160 hover:bg-subtle disabled:opacity-40"
           >
             <LogOut className="size-3.5" aria-hidden="true" />

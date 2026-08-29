@@ -103,7 +103,13 @@ export function Waveform({
           ref={(el) => {
             bars.current[i] = el;
           }}
-          className={`h-full w-[3px] rounded-full ${active ? color : "bg-line"}`}
+          // The reference sets one bar in coral against the violet. It puts it
+          // dead centre, which works for a static graphic; here the bars are a
+          // scrolling history, so the coral marks the live edge - the sample
+          // arriving now - where it means something.
+          className={`h-full w-[3px] rounded-full ${
+            !active ? "bg-line" : i >= BARS - 2 ? "bg-accent-vivid" : color
+          }`}
           style={{ transform: `scaleY(${MIN_SCALE})` }}
         />
       ))}

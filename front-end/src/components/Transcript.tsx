@@ -24,8 +24,8 @@ function ToolPill({ item }: { item: Extract<TimelineItem, { kind: "tool" }> }) {
       : "bg-bad-subtle text-bad";
 
   return (
-    <div className="flex justify-center">
-      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[13px] ${tone}`}>
+    <div className="flex">
+      <span className={`inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 font-mono text-[12px] ${tone}`}>
         <Icon className={`size-3.5 shrink-0 ${running ? "animate-spin" : ""}`} aria-hidden="true" />
         {running ? `Running ${item.name}…` : toolSummary(item.name, ok, item.result)}
         {item.latencyMs !== null && (
@@ -61,7 +61,7 @@ function ChangeList({ changes }: { changes: ProposedChange[] }) {
 function ProposalCard({ item }: { item: Extract<TimelineItem, { kind: "proposal" }> }) {
   return (
     <div
-      className={`rounded-lg border p-4 ${
+      className={`max-w-[34rem] rounded-lg border p-4 ${
         item.resolved ? "border-line bg-subtle opacity-55" : "border-warn bg-warn-subtle"
       }`}
     >
@@ -91,7 +91,7 @@ function ProposalCard({ item }: { item: Extract<TimelineItem, { kind: "proposal"
 function ConfirmationCard({ item }: { item: Extract<TimelineItem, { kind: "confirmation" }> }) {
   const r = item.reservation as Record<string, string>;
   return (
-    <div className="rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
+    <div className="max-w-[34rem] rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow-sm)]">
       <div className="mb-3 flex items-center justify-between gap-3 border-b border-line pb-3">
         <p className="flex items-center gap-2 text-sm font-semibold text-ink">
           <CircleCheck className="size-4 text-ok" aria-hidden="true" />
@@ -120,42 +120,144 @@ function ConfirmationCard({ item }: { item: Extract<TimelineItem, { kind: "confi
   );
 }
 
+/**
+ * What the left edge says about one event: its rail colour, and the word in
+ * the gutter beside it.
+ *
+ * Speaker colour follows the reference - violet for the agent, coral for the
+ * person. The cyan --live stays reserved for connection state, which is a
+ * different axis from who is talking.
+ */
+function rowMeta(item: TimelineItem): {
+  tone: string;
+  label: string;
+  labelTone: string;
+  labelPad: string;
+} {
+  if (item.kind === "message")
+    return item.role === "user"
+      ? { tone: "rail-user", label: "Guest", labelTone: "text-accent", labelPad: "sm:pt-[9px]" }
+      : { tone: "rail-agent", label: "Agent", labelTone: "text-brand", labelPad: "sm:pt-[9px]" };
+
+  if (item.kind === "tool")
+    return {
+      tone: item.status === "ok" ? "rail-ok" : item.status === "error" ? "rail-bad" : "",
+      label: "Tool",
+      labelTone: "text-ink-muted",
+      labelPad: "sm:pt-[5px]",
+    };
+
+  if (item.kind === "proposal")
+    return item.resolved
+      ? { tone: "rail-ok", label: "Applied", labelTone: "text-ink-muted", labelPad: "sm:pt-[15px]" }
+      : { tone: "rail-warn", label: "Review", labelTone: "text-warn", labelPad: "sm:pt-[15px]" };
+
+  return { tone: "rail-ok", label: "Saved", labelTone: "text-ok", labelPad: "sm:pt-[15px]" };
+}
+
+/**
+ * One entry: rail segment, gutter label, content.
+ *
+ * The rail is a continuous spine down the left of the conversation with a
+ * segment per event. Reading it top-to-bottom is reading the session: who
+ * spoke, what ran, what succeeded. The gutter carries the same information in
+ * words, so the meaning does not rest on colour alone.
+ *
+ * Below sm the gutter would eat the width the message needs, so the label
+ * stacks above the content instead of sitting beside it. One markup, two
+ * layouts - the inner div is a block on small screens and a grid above them.
+ */
+function Row({
+  tone,
+  label,
+  labelTone,
+  labelPad = "",
+  children,
+}: {
+  tone: string;
+  label: string;
+  labelTone: string;
+  labelPad?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="animate-row-enter grid grid-cols-[4px_1fr] gap-3 sm:gap-4">
+      <span className={`rail ${tone}`} aria-hidden="true" />
+      <div className="min-w-0 sm:grid sm:grid-cols-[54px_1fr] sm:gap-4">
+        <span
+          className={`mb-1 block font-mono text-[10.5px] uppercase leading-[1.7] tracking-[0.1em] sm:mb-0 ${labelPad} ${labelTone}`}
+        >
+          {label}
+        </span>
+        <div className="min-w-0">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function renderItem(item: TimelineItem) {
+  if (item.kind === "tool") return <ToolPill item={item} />;
+  if (item.kind === "proposal") return <ProposalCard item={item} />;
+  if (item.kind === "confirmation") return <ConfirmationCard item={item} />;
+
+  // Speech as a bubble. The role already sits in the gutter, so the two sides
+  // are told apart by fill and measure rather than by repeating the name: the
+  // guest speaks in short turns and gets the narrower, tinted bubble.
+  const isUser = item.role === "user";
+  return (
+    <div
+      className={`w-fit rounded-2xl px-4 py-2.5 text-[15px] leading-[1.55] ${
+        isUser
+          ? "max-w-[26rem] rounded-tl-md bg-accent-subtle font-medium text-ink"
+          : "max-w-[34rem] rounded-tl-md border border-line bg-subtle text-ink-secondary"
+      }`}
+    >
+      {item.text}
+    </div>
+  );
+}
+
 export function Transcript({ items }: { items: TimelineItem[] }) {
-  const end = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const el = scroller.current;
+    if (!el) return;
+
+    // Scroll the transcript container itself rather than calling
+    // scrollIntoView on a sentinel: scrollIntoView walks up and scrolls every
+    // scrollable ancestor, which dragged the whole page down on each new line.
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [items.length]);
 
-  // The empty state carries the journey: it tells a first-time visitor what to
-  // say, which is the one thing a voice interface cannot show them.
+  // The empty state doubles as a key: it lays the four steps out on the same
+  // rail the conversation will use, so the colour language is already learned
+  // by the time the first line arrives. Order is load-bearing here - identity
+  // must be verified before anything can be looked up or changed.
   if (items.length === 0) {
     return (
-      <div className="flex flex-1 flex-col justify-center px-6 py-10">
-        <div className="mx-auto w-full max-w-sm">
-          <p className="text-[15px] font-semibold text-ink">Ready when you are</p>
-          <p className="mt-1 text-sm text-ink-muted">
-            Speak naturally — the agent will guide you through each step.
+      // Auto margin rather than justify-center: on a scroll container,
+      // centring with justify-content pushes overflow past the start edge
+      // where it cannot be scrolled back to. An auto margin collapses to 0
+      // once free space runs out, so tall content scrolls instead of clipping.
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5">
+        {/* Bottom-anchored, not centred: with nothing else in the panel, a
+            centred headline left a hole between itself and the dock. Pushed
+            down, it reads as one column with the orb - and the remaining
+            space collects under the status bar, where space is expected. */}
+        <div className="mx-auto mt-auto w-full max-w-lg text-center">
+          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">
+            Session
           </p>
-
-          <ol className="mt-5 flex flex-col gap-3">
-            {[
-              ["Verify", "Give your name, then your date of birth"],
-              ["Look up", "Ask about your upcoming reservation"],
-              ["Change", "Request a new room type or check-out date"],
-              ["Confirm", "The change is read back before anything is saved"],
-            ].map(([title, body], i) => (
-              <li key={title} className="flex gap-3">
-                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-brand-subtle font-mono text-[11px] text-brand">
-                  {i + 1}
-                </span>
-                <span className="text-sm leading-snug">
-                  <span className="font-medium text-ink">{title}</span>
-                  <span className="text-ink-muted"> — {body}</span>
-                </span>
-              </li>
-            ))}
-          </ol>
+          {/* The whole empty state. Everything that used to sit under this -
+              a rule, a line of instruction, a four-step key - is gone: the
+              dock below already says "Tap to speak", and the rail teaches
+              itself once the first lines arrive. */}
+          <h2 className="mt-2 text-[30px] font-semibold leading-[1.08] tracking-[-0.02em] text-ink">
+            Ready when
+            <br />
+            you are
+          </h2>
         </div>
       </div>
     );
@@ -169,33 +271,14 @@ export function Transcript({ items }: { items: TimelineItem[] }) {
       aria-live="polite"
       aria-relevant="additions"
       aria-label="Conversation transcript"
-      className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-6"
+      ref={scroller}
+      className="rail-track flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-6"
     >
-      {items.map((item) => {
-        if (item.kind === "tool") return <ToolPill key={item.id} item={item} />;
-        if (item.kind === "proposal") return <ProposalCard key={item.id} item={item} />;
-        if (item.kind === "confirmation") return <ConfirmationCard key={item.id} item={item} />;
-
-        const isUser = item.role === "user";
-        return (
-          <div
-            key={item.id}
-            className={`animate-row-enter flex flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
-          >
-            <span className="px-1 text-xs text-ink-muted">{isUser ? "You" : "Agent"}</span>
-            <div
-              className={`max-w-[82%] px-4 py-2.5 text-[15px] leading-[1.5] ${
-                isUser
-                  ? "rounded-2xl rounded-br-md bg-brand text-brand-fg"
-                  : "rounded-2xl rounded-bl-md bg-subtle text-ink"
-              }`}
-            >
-              {item.text}
-            </div>
-          </div>
-        );
-      })}
-      <div ref={end} />
+      {items.map((item) => (
+        <Row key={item.id} {...rowMeta(item)}>
+          {renderItem(item)}
+        </Row>
+      ))}
     </div>
   );
 }

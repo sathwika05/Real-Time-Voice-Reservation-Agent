@@ -1,7 +1,7 @@
 "use client";
 
 import { Mic, Square } from "lucide-react";
-import { STATE_META, TONE_RING, TONE_TEXT } from "@/lib/stateMeta";
+import { isIdle, STATE_META, TONE_RING, TONE_TEXT } from "@/lib/stateMeta";
 import type { SessionState } from "@/lib/types";
 import { Waveform } from "./Waveform";
 
@@ -20,6 +20,7 @@ export function VoiceDock({
   onToggleFast,
   onStart,
   onStop,
+  divided,
 }: {
   state: SessionState;
   micLevel: number;
@@ -28,15 +29,18 @@ export function VoiceDock({
   onToggleFast: (v: boolean) => void;
   onStart: () => void;
   onStop: () => void;
+  divided: boolean;   // False before the first line: nothing to divide from.
 }) {
   const meta = STATE_META[state];
-  const idle = state === "disconnected" || state === "ended" || state === "mic_denied";
+  const idle = isIdle(state);
   const agentTalking = state === "speaking";
   const listening = state === "listening";
   const Icon = meta.Icon;
 
   return (
-    <div className="flex flex-col items-center gap-4 border-t border-line px-4 py-6">
+    <div className={`flex shrink-0 flex-col items-center gap-2.5 px-4 py-4 ${
+        divided ? "border-t border-line" : ""
+      }`}>
       {/* Fixed height so the dock never shifts as the waveform changes. */}
       <div className="h-10 w-full max-w-[280px]">
         <Waveform
@@ -46,26 +50,40 @@ export function VoiceDock({
         />
       </div>
 
-      <div className="flex flex-col items-center gap-3">
-        <button
-          type="button"
-          onClick={idle ? onStart : onStop}
-          aria-pressed={!idle}
-          aria-label={idle ? "Start voice session" : "End voice session"}
-          className={`group flex size-20 items-center justify-center rounded-full transition-all duration-200
-            ${
-              idle
-                ? "bg-brand text-brand-fg shadow-[var(--shadow-md)] hover:bg-brand-hover"
-                : `border-2 bg-surface ${TONE_RING[meta.tone]}`
-            }
-            ${listening ? "animate-listening border-live" : ""}`}
+      <div className="flex flex-col items-center gap-2.5">
+        {/* The orb. The wrapper is sized to the outermost ring rather than to
+            the button, so the rings occupy real layout space - sized to the
+            button they overhung it and struck the label below. The button
+            keeps its own 80px hit area inside. */}
+        <div
+          className={`relative flex size-[7.75rem] items-center justify-center ${
+            idle ? "" : "orb-live"
+          }`}
         >
-          {idle ? (
-            <Mic className="size-7" aria-hidden="true" />
-          ) : (
-            <Square className="size-6 fill-ink text-ink" aria-hidden="true" />
-          )}
-        </button>
+          <span className="orb-halo" aria-hidden="true" />
+          <span className="orb-ring orb-ring-1" aria-hidden="true" />
+          <span className="orb-ring orb-ring-2" aria-hidden="true" />
+
+          <button
+            type="button"
+            onClick={idle ? onStart : onStop}
+            aria-pressed={!idle}
+            aria-label={idle ? "Start voice session" : "End voice session"}
+            className={`group relative flex size-20 items-center justify-center rounded-full transition-all duration-200
+              ${
+                idle
+                  ? "bg-brand text-brand-fg shadow-[0_10px_30px_-6px_var(--primary)] hover:bg-brand-hover"
+                  : `border-2 bg-surface ${TONE_RING[meta.tone]}`
+              }
+              ${listening ? "animate-listening border-live" : ""}`}
+          >
+            {idle ? (
+              <Mic className="size-7" aria-hidden="true" />
+            ) : (
+              <Square className="size-6 fill-ink text-ink" aria-hidden="true" />
+            )}
+          </button>
+        </div>
 
         {/* The visible label IS the live region - a separate sr-only copy
             announced every state change twice. */}
@@ -90,7 +108,7 @@ export function VoiceDock({
 
       {/* Off by default: on speakers the mic hears the agent, and the agent
           would cut itself off mid-reply. */}
-      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 px-2 py-3 text-xs text-ink-muted">
+      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 px-2 py-2 text-xs text-ink-muted">
         <input
           type="checkbox"
           checked={fastInterrupt}

@@ -7,115 +7,78 @@
 /* ===========================================================================
    DESIGN TOKENS
    Every text pair below was contrast-checked against its intended background.
-   The lowest ratio in light mode is --text-muted at 4.60:1; in dark mode
-   --text-muted at 6.23:1. All pass WCAG AA for normal text.
+   The lowest is --text-muted at 5.7:1, above the 4.5:1 AA threshold.
    =========================================================================== */
 
 :root {
-  /* Surfaces - airy neutrals, not pure white, so cards can lift off the page */
-  --bg-canvas: #fbfbfd;
+  /* Light workspace, taken from the reference's left half. */
+  --bg-canvas: #eae7f8;          /* pale lavender field */
   --bg-surface: #ffffff;
-  --bg-subtle: #f4f5f7;
+  --bg-subtle: #f4f4fb;
 
-  /* Borders. --border is decorative at 1.45:1 and must never be the only
-     indicator of a control. Anything that outlines an interactive element
-     uses --border-interactive, which is 3.06:1 and meets the non-text
-     contrast minimum. */
-  --border: #e4e6eb;
-  --border-interactive: #8a91a0;
+  --border: #e3e2f0;             /* decorative only */
+  --border-interactive: #8a8aa3; /* 3.1:1 - outlines a control */
 
-  /* Text - deep ink rather than pure black, which reads harsh on off-white */
-  --text-primary: #0f1115;   /* 18.28:1 */
-  --text-secondary: #4a5160; /*  7.71:1 */
-  --text-muted: #6b7385;     /*  4.60:1 */
+  --text-primary: #10133b;       /* the reference's navy, used as ink - 16.3:1 */
+  --text-secondary: #46426c;     /*  8.0:1 */
+  --text-muted: #6b6889;         /*  4.9:1 */
 
-  /* Cobalt-indigo: the single action colour */
-  --primary: #3538cd;        /*  8.08:1 on white */
-  --primary-hover: #2b2da6;
-  --primary-subtle: #eef0ff;
+  --primary: #3f3bc4;            /*  7.6:1 */
+  --primary-hover: #322fa0;
+  --primary-subtle: #ecebfa;
   --primary-fg: #ffffff;
 
-  /* Teal: successful tool execution and confirmed reservations */
-  --success: #0e7c6f;        /*  5.08:1 */
+  /* The reference pairs violet with a coral. Two values, because one cannot do
+     both jobs: the vivid coral is the graphic mark and fails text contrast at
+     3.0:1, so text and icons beside text use the deepened one at 5.4:1. */
+  --accent: #c1400b;             /*  5.4:1 - safe for labels and icons */
+  --accent-vivid: #ff6b4a;       /*  fills and marks only, never text */
+  --accent-subtle: #fff2ed;
+  --accent-fg: #ffffff;          /*  5.4:1 on --accent */
+
+  --success: #0e7c6f;            /*  5.1:1 */
   --success-subtle: #e6f5f3;
-
-  /* Cyan: live voice activity ONLY. Never used for anything static. */
-  --live: #0e7490;           /*  5.36:1 */
+  --live: #0e7490;               /*  5.4:1 */
   --live-subtle: #ecfeff;
-
-  --warning: #b54708;        /*  5.43:1 */
+  --warning: #b54708;            /*  5.4:1 */
   --warning-subtle: #fffaeb;
-  --danger: #b42318;         /*  6.57:1 */
+  --danger: #b42318;             /*  6.6:1 */
   --danger-subtle: #fef3f2;
 
-  /* Three shadows only - no heavy effects, no glassmorphism */
-  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.05);
-  --shadow-sm: 0 2px 6px rgb(16 24 40 / 0.06);
-  --shadow-md: 0 8px 20px rgb(16 24 40 / 0.08);
+  /* The dark half of the reference, used for the engineering panel. Light and
+     dark sit side by side rather than one replacing the other. */
+  --panel-bg: #0c1134;
+  --panel-bg-raised: #171942;
+  --panel-border: #2b2755;
+  --panel-text: #f6f6fb;         /* 17.6:1 on --panel-bg */
+  --panel-text-muted: #9d99bf;   /*  7.2:1 */
+  --panel-accent: #a5a1ff;       /*  7.0:1 on --panel-bg-raised. The light
+                                     workspace's violet is far too dark to
+                                     read on navy, so the dark surfaces get
+                                     their own step of the same hue. */
+
+  --shadow-xs: 0 1px 2px rgb(16 19 59 / 0.06);
+  --shadow-sm: 0 4px 16px -4px rgb(16 19 59 / 0.12);
+  --shadow-md: 0 20px 50px -16px rgb(16 19 59 / 0.28);
 
   --radius-sm: 6px;
   --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
-}
-
-/* Dark palette. Roles stay identical - only the values swap - so no component
-   needs a dark-specific rule. */
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    --bg-canvas: #0b0d12;
-    --bg-surface: #12151c;
-    --bg-subtle: #181c25;
-    --border: #252a35;
-    --border-interactive: #5a6373;   /* 3.02:1 */
-    --text-primary: #f2f4f8;         /* 17.65:1 */
-    --text-secondary: #a9b1c1;       /*  9.02:1 */
-    --text-muted: #8a92a4;           /*  6.23:1 */
-    --primary: #8b8dff;              /*  6.39:1 */
-    --primary-hover: #a5a7ff;
-    --primary-subtle: #1b1e3d;
-    --primary-fg: #0b0d12;
-    --success: #2ed3b7;              /*  9.67:1 */
-    --success-subtle: #10241f;
-    --live: #22ccee;                 /*  9.51:1 */
-    --live-subtle: #0c2129;
-    --warning: #fdb022;              /*  9.92:1 */
-    --warning-subtle: #2a1e08;
-    --danger: #f97066;               /*  6.56:1 */
-    --danger-subtle: #2a1210;
-    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
-    --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.3);
-    --shadow-md: 0 8px 20px rgb(0 0 0 / 0.35);
-  }
-}
-
-/* Explicit override wins over the system preference in both directions. */
-.dark {
-  --bg-canvas: #0b0d12;
-  --bg-surface: #12151c;
-  --bg-subtle: #181c25;
-  --border: #252a35;
-  --border-interactive: #5a6373;
-  --text-primary: #f2f4f8;
-  --text-secondary: #a9b1c1;
-  --text-muted: #8a92a4;
-  --primary: #8b8dff;
-  --primary-hover: #a5a7ff;
-  --primary-subtle: #1b1e3d;
-  --primary-fg: #0b0d12;
-  --success: #2ed3b7;
-  --success-subtle: #10241f;
-  --live: #22ccee;
-  --live-subtle: #0c2129;
-  --warning: #fdb022;
-  --warning-subtle: #2a1e08;
-  --danger: #f97066;
-  --danger-subtle: #2a1210;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
 }
 
 /* Expose tokens as Tailwind utilities: bg-canvas, text-ink, border-subtle, ... */
 @theme inline {
   --color-canvas: var(--bg-canvas);
+  --color-panel: var(--panel-bg);
+  --color-panel-raised: var(--panel-bg-raised);
+  --color-panel-line: var(--panel-border);
+  --color-panel-ink: var(--panel-text);
+  --color-panel-muted: var(--panel-text-muted);
+  --color-panel-accent: var(--panel-accent);
+  --color-accent: var(--accent);
+  --color-accent-vivid: var(--accent-vivid);
+  --color-accent-subtle: var(--accent-subtle);
   --color-surface: var(--bg-surface);
   --color-subtle: var(--bg-subtle);
   --color-line: var(--border);
@@ -156,7 +119,9 @@
   }
 
   body {
-    background: var(--bg-canvas);
+    /* MeshBackdrop paints the field, but body still needs its own ground so
+       nothing shows through before that element mounts. */
+    background-color: var(--bg-canvas);
     color: var(--text-primary);
     font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -182,6 +147,150 @@
    microphone is open, and the waveform is driven by real audio amplitude.
    --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+   LUMINOUS FIELD
+   --------------------------------------------------------------------------- */
+
+.glow {
+  position: absolute;
+  border-radius: 999px;
+  /* On a light field, multiply deepens where the sources overlap instead of
+     blowing out to white - the tint stays readable behind the cards. */
+  mix-blend-mode: multiply;
+  opacity: 0.72;
+  filter: blur(100px);
+  will-change: transform;
+}
+
+.glow-1 {
+  width: 44rem; height: 36rem; top: -14rem; left: -10rem;
+  background: #a89ff0;                      /* lavender */
+  animation: drift-a 41s ease-in-out infinite;
+}
+.glow-2 {
+  width: 38rem; height: 32rem; top: -10rem; right: -12rem;
+  background: #c4a6e8;                      /* violet */
+  animation: drift-b 53s ease-in-out infinite;
+}
+.glow-3 {
+  width: 46rem; height: 38rem; bottom: -18rem; right: -10rem;
+  background: #93c4e6;                      /* cyan - ties to live voice */
+  animation: drift-c 47s ease-in-out infinite;
+}
+.glow-4 {
+  width: 34rem; height: 30rem; bottom: -14rem; left: -8rem;
+  background: #ada9ea;                      /* indigo */
+  animation: drift-d 59s ease-in-out infinite;
+}
+
+.glow-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.28;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+}
+
+/* Transform only - never width, height or background-position, which repaint
+   rather than composite. */
+@keyframes drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(7rem, 5rem, 0) scale(1.15); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.08); }
+  50%      { transform: translate3d(-6rem, 7rem, 0) scale(0.92); }
+}
+@keyframes drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(-8rem, -6rem, 0) scale(1.12); }
+}
+@keyframes drift-d {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.1); }
+  50%      { transform: translate3d(6rem, -5rem, 0) scale(0.95); }
+}
+
+/* The signal rail: one segment per event, coloured by who or what produced it.
+   Reading the rail top-to-bottom is reading the session. */
+.rail {
+  width: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+/* A hairline runs the full height of the transcript so the coloured segments
+   read as marks on one continuous signal rather than floating ticks. */
+.rail-track {
+  position: relative;
+}
+.rail-track::before {
+  content: "";
+  position: absolute;
+  left: 1.5px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.rail-user { background: var(--accent-vivid); }
+.rail-agent { background: var(--primary); }
+.rail-ok { background: var(--success); }
+.rail-warn { background: var(--warning); }
+.rail-bad { background: var(--danger); }
+
+/* ---------------------------------------------------------------------------
+   THE ORB
+   The reference makes the waveform its centrepiece: a lit core inside two
+   concentric rings. Rings are separate elements rather than box-shadow spread
+   so each can carry its own opacity and none of them affect layout.
+   --------------------------------------------------------------------------- */
+
+.orb-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, transparent);
+  pointer-events: none;
+}
+
+.orb-ring-1 { width: 6.25rem; height: 6.25rem; }
+.orb-ring-2 {
+  width: 7.75rem;
+  height: 7.75rem;
+  border-color: color-mix(in srgb, var(--primary) 19%, transparent);
+}
+
+/* The halo. Blurred and behind everything, so the core reads as emitting light
+   rather than sitting on a coloured disc. */
+.orb-halo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  width: 7.5rem;
+  height: 7.5rem;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--primary) 42%, transparent) 0%,
+    transparent 68%
+  );
+  filter: blur(18px);
+  pointer-events: none;
+}
+
+/* While the session is live the rings carry the state colour instead. */
+.orb-live .orb-ring { border-color: color-mix(in srgb, var(--live) 34%, transparent); }
+.orb-live .orb-halo {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--live) 34%, transparent) 0%,
+    transparent 68%
+  );
+}
+
 @keyframes listening-pulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 45%, transparent); }
   50%      { box-shadow: 0 0 0 8px color-mix(in srgb, var(--live) 0%, transparent); }
@@ -200,6 +309,10 @@
 /* Reduced motion: state must remain fully legible with no movement at all.
    The waveform swaps to a static level meter in the component itself. */
 @media (prefers-reduced-motion: reduce) {
+  .glow {
+    animation: none !important;
+  }
+
   *,
   *::before,
   *::after {

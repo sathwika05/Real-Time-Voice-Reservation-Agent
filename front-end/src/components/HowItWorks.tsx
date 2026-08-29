@@ -25,7 +25,10 @@ const STEPS = [
 
 export function HowItWorks() {
   return (
-    <section className="border-t border-line bg-canvas px-4 py-12 sm:px-6">
+    // No background of its own: an opaque fill here painted over the fixed
+    // backdrop and left a hard seam across the page once the field was
+    // saturated enough to see.
+    <section className="border-t border-line px-4 py-12 sm:px-6">
       <div className="mx-auto max-w-[1200px]">
         <h2 className="text-[20px] font-semibold text-ink">How it works</h2>
         <p className="mt-1 max-w-prose text-sm text-ink-muted">
