@@ -26,17 +26,31 @@ That architectural difference is why response latency here is measured in **hund
 
 ```mermaid
 flowchart LR
-    Mic["🎤 Local mic"] --> AS["AudioStreamer<br/>PyAudio"]
-    Browser["🌐 Browser<br/>AudioWorklet"] <-->|"WebSocket"| WS["server.py<br/>FastAPI"]
-    AS -->|"add_audio_chunk"| BSM["BedrockStreamManager"]
+    subgraph clients["Transports"]
+        Mic["🎤 Local mic"] --> AS["AudioStreamer<br/>PyAudio"]
+        Browser["🌐 Browser<br/>AudioWorklet"]
+    end
+
+    Browser <-->|"PCM frames + JSON events<br/>one WebSocket"| WS["server.py<br/>FastAPI"]
+
+    subgraph core["Agent core — transport agnostic"]
+        BSM["BedrockStreamManager"]
+        TP["ToolProcessor"]
+    end
+
+    AS -->|"add_audio_chunk"| BSM
     WS -->|"add_audio_chunk"| BSM
     BSM <-->|"bidirectional stream"| NS["Amazon Nova Sonic"]
-    BSM -->|"toolUse"| TP["ToolProcessor"]
-    TP <--> DDB[("DynamoDB<br/>Guests · Reservations")]
+    BSM -->|"toolUse"| TP
+    TP <--> DDB[("DynamoDB<br/>Hotel_Guests · Hotel_Reservations")]
     TP -->|"toolResult"| BSM
     BSM -->|"audio_output_queue"| AS
     BSM -->|"audio_output_queue"| WS
 ```
+
+The Next.js app serves two routes. `/` is the live client above; `/portfolio` is a
+static case study — heading, recorded demo, and the same `HowItWorks` component —
+which opens no socket and needs no backend.
 
 | Component | Responsibility |
 |---|---|
@@ -44,7 +58,8 @@ flowchart LR
 | `ToolProcessor` | Three DynamoDB-backed tools, plus identity verification. Blocking AWS calls run in an executor so the audio loop never stalls |
 | `AudioStreamer` | Terminal transport — local microphone and speaker via PyAudio |
 | `server.py` | Browser transport — audio plus a structured event stream over one WebSocket |
-| `front-end/` | Next.js client — conversation, voice dock, and engineering trace |
+| `front-end/` `/` | Next.js live client — conversation, voice dock, and engineering trace |
+| `front-end/` `/portfolio` | Static case study page — recorded demo, no socket, no backend |
 
 The agent core never imports PyAudio. It exposes exactly two seams — `add_audio_chunk()` in, `audio_output_queue` out — which is why a second transport could be added without touching agent logic. A telephony transport (Twilio, Amazon Connect) would attach the same way.
 
@@ -89,6 +104,44 @@ Reservation changes are two-phase. `updateReservationTool` is called first with 
 The read-back cannot be skipped, because there is no id to commit with until a proposal exists — and the commit replays the stored expression rather than re-reading the arguments, so what is saved is exactly what was read back. Proposals are single-use and scoped to one reservation and one session.
 
 This exists because the earlier design asked for confirmation in the system prompt, which is the same shape as the identity bug below: a request the model may simply not follow.
+
+A full turn, from the spoken name to the row actually changing. Both gates are in
+Python — the model cannot route around either:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as Guest
+    participant NS as Nova Sonic
+    participant TP as ToolProcessor
+    participant DB as DynamoDB
+
+    G->>NS: "Anna Smith, June fifth nineteen ninety-one"
+    NS->>TP: checkGuestProfileTool(guestName, dateOfBirth)
+    TP->>DB: get_item(Hotel_Guests)
+    DB-->>TP: stored dob
+    Note over TP: normalise both sides, compare in Python.<br/>Stored DOB is never returned.
+    TP-->>NS: { verified: true }
+    Note over TP: verified_guest set for this session only
+
+    G->>NS: "Change my room to a King Suite"
+    NS->>TP: updateReservationTool(mode="propose", newRoomType)
+    Note over TP: gate 1 — session verified?<br/>gate 2 — booking belongs to this guest?<br/>gate 3 — room type in ALLOWED_ROOM_TYPES?
+    TP->>DB: get_item(Hotel_Reservations)
+    TP-->>NS: { proposalId, changes:[King Deluxe → King Suite], written: false }
+    NS-->>G: reads the diff back aloud
+
+    G->>NS: "Yes, confirm that"
+    NS->>TP: updateReservationTool(mode="commit", proposalId)
+    Note over TP: replays the stored expression,<br/>not a fresh reading of the arguments
+    TP->>DB: update_item
+    TP-->>NS: { written: true }
+    NS-->>G: "Your room has been changed."
+```
+
+Step 8 is the load-bearing one: `written: false`. There is no id to commit with
+until a proposal exists, so the read-back cannot be skipped by a model that
+decides to be helpful.
 
 ## Tools
 
@@ -140,14 +193,21 @@ backend/
   requirements.txt
 
 front-end/               # Next.js 16 · TypeScript · Tailwind v4 · Lucide
+  src/app/
+    page.tsx             # / - the live voice client
+    portfolio/page.tsx   # /portfolio - case study, recorded demo, no socket
+    globals.css          # Design tokens; WCAG ratio recorded beside each colour
   src/lib/
     types.ts             # The event contract shared with the backend
     audio.ts             # Mic capture and scheduled speech playback
     useVoiceSession.ts   # One state machine driving both panes
     stateMeta.ts         # Icon + label + tone for every interface state
-  src/components/        # Header, SessionStrip, Transcript, VoiceDock,
-                         # Waveform, TracePanel, HowItWorks
-  public/mic-processor.js
+    toolDisplay.ts       # Tool names and arguments as shown in the trace
+  src/components/        # Header, ConversationHeader, Transcript, VoiceDock,
+                         # Waveform, TracePanel, HowItWorks, MeshBackdrop
+  public/
+    mic-processor.js     # AudioWorklet: resamples to 16 kHz, detects speech
+    demo.mp4             # Recorded walkthrough shown on /portfolio
 ```
 
 ### Event contract
@@ -155,13 +215,28 @@ front-end/               # Next.js 16 · TypeScript · Tailwind v4 · Lucide
 The browser receives binary frames (24 kHz PCM) and JSON text frames on the same socket:
 
 ```
-transcript    role, text, final
-tool_call     id, name, args          (sanitized)
-tool_result   id, ok, latencyMs, result
-proposal      proposalId, reservationId, changes[]
-state         listening | processing | speaking | executing_tool
-error         message
+ready                                          session open, start sending audio
+transcript      role, text, final
+state           value, reason?, tool?
+tool_call       id, name, args                 (sanitized)
+tool_result     id, ok, latencyMs, result      (sanitized)
+proposal        proposalId, reservationId, changes[]
+barge_in                                       discard queued audio, stop playback
+session_ended                                  Nova Sonic closed the stream
+error           code?, message
 ```
+
+`state` carries one of thirteen values, defined in `src/lib/types.ts`:
+
+```
+disconnected · connecting · reconnecting · requesting_mic · mic_denied
+ready · listening · processing · speaking · executing_tool
+awaiting_confirmation · ended · error
+```
+
+`awaiting_confirmation` is the one that matters: it is set when a proposal is
+outstanding, and it is why the interface can say a write is pending rather than
+leaving the guest to infer it from the transcript.
 
 Tool arguments and results are redacted **server-side** — date of birth, email, and phone never reach the browser, so the trace panel cannot leak them even in a screen recording.
 
@@ -210,7 +285,13 @@ npm install
 npm run dev
 ```
 
-Open <http://127.0.0.1:3000>. The client connects to `ws://127.0.0.1:8010/ws`; override with `NEXT_PUBLIC_WS_URL`.
+Open <http://localhost:3000> for the live client, or <http://localhost:3000/portfolio>
+for the case study page. The client connects to `ws://127.0.0.1:8010/ws`; override
+with `NEXT_PUBLIC_WS_URL`.
+
+Use `localhost` rather than `127.0.0.1`: Next 16 blocks cross-origin dev resources,
+so at the IP every chunk 403s and the page loads without its JavaScript. Add
+`allowedDevOrigins: ['127.0.0.1']` to `next.config.ts` if you need the IP.
 
 The minimal test page at <http://127.0.0.1:8010> still works and is useful for isolating transport problems from UI ones.
 
@@ -220,10 +301,16 @@ Microphone access requires a secure origin: `localhost` and `127.0.0.1` qualify,
 
 Seeded guests:
 
-| Guest | DOB | Reservation |
-|---|---|---|
-| Anna Smith | 1991-06-05 | Upcoming, fully paid |
-| Mark Johnson | 1985-01-21 | Upcoming with balance due, plus a past stay |
+| Guest | DOB | Reservation | Branch it reaches |
+|---|---|---|---|
+| Anna Smith | 1991-06-05 | Upcoming King Deluxe, fully paid | The happy path |
+| Mark Johnson | 1985-01-21 | Upcoming with balance due, plus a past stay | Balance line, `includePastStays` |
+| Priya Raman | 1978-11-30 | Past stay only | *"No upcoming reservations."* |
+| David Chen | 1996-02-14 | None at all | *"No reservations found."* |
+| *(any other name)* | — | — | Guest not found — same refusal as a wrong DOB |
+
+Dates are computed relative to the day `db_setup.py` runs, so re-run it if the
+seeded stays have drifted into the past.
 
 A conversation exercising all three tools:
 
