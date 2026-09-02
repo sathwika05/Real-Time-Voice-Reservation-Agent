@@ -38,53 +38,24 @@ function Card({ e }: { e: TraceEntry }) {
 }
 
 /**
- * What the panel will show, before it has anything to show.
+ * What the panel shows before it has anything to show.
  *
- * The three tools the agent can actually call, in the order the backend
- * enforces - identity first, and nothing else runs until it passes. Drawn as
- * the same cards the real entries use, so the trace fills these slots in
- * rather than replacing an unrelated message.
+ * Deliberately just a label. This used to pre-draw the three tools as dashed
+ * slots, but a panel that lists its calls before any call has happened reads
+ * as a mockup - and it buries the thing that is actually worth watching, which
+ * is entries arriving in real time as the guest speaks. Empty until the
+ * backend says otherwise.
  */
-const SEQUENCE: { name: string; body: string }[] = [
-  {
-    name: "check_guest_profile",
-    body: "Matches the spoken name and date of birth against DynamoDB. The model receives only a boolean, and the reservation tools refuse to run until this passes.",
-  },
-  {
-    name: "check_reservation_status",
-    body: "Reads the upcoming reservation for a verified guest. Date of birth, email and phone are redacted server-side before anything reaches this panel.",
-  },
-  {
-    name: "update_reservation",
-    body: "Two calls, never one: a proposal that writes nothing and is read back to the guest, then a commit carrying that proposal's id.",
-  },
-];
-
 function PendingSequence() {
   return (
-    // The auto margin on the first child bottoms the sequence out, so this
-    // column ends level with the conversation card's. Not justify-end: on a
-    // scroll container that pushes overflow past the start edge where it
-    // cannot be reached, whereas an auto margin collapses to 0 first.
-    <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
-      <p className="mb-0.5 mt-auto font-mono text-[10.5px] uppercase tracking-[0.12em] text-panel-muted">
+    // mt-auto bottoms the label out so this column ends level with the
+    // conversation card's. Not justify-end: on a scroll container that pushes
+    // overflow past the start edge where it cannot be reached, whereas an auto
+    // margin collapses to 0 first.
+    <div className="flex flex-1 flex-col overflow-y-auto px-4 pb-4">
+      <p className="mt-auto font-mono text-[10.5px] uppercase tracking-[0.12em] text-panel-muted">
         Awaiting first call
       </p>
-
-      {SEQUENCE.map(({ name, body }, i) => (
-        <div
-          key={name}
-          // Dashed and dimmed: these are slots, not results. A solid card here
-          // would read as something that had already run.
-          className="rounded-lg border border-dashed border-panel-line p-3"
-        >
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[11px] text-panel-accent">{i + 1}</span>
-            <span className="font-mono text-[12.5px] text-panel-ink/70">{name}</span>
-          </div>
-          <p className="mt-1.5 text-[12px] leading-relaxed text-panel-muted">{body}</p>
-        </div>
-      ))}
     </div>
   );
 }
