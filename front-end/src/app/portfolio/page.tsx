@@ -67,17 +67,6 @@ export default function PortfolioPage() {
             <span className="text-[14px] font-semibold tracking-[-0.01em] text-ink">
               Voice Reservations
             </span>
-            {/* Icon only, so it reads as a utility rather than competing with
-                the hero's actions. The label is carried by aria-label. */}
-            <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noreferrer noopener"
-              aria-label="View the source on GitHub"
-              className="ml-auto flex size-11 items-center justify-center rounded-full border border-line bg-surface/70 text-ink-secondary backdrop-blur-sm transition-colors duration-160 hover:bg-surface hover:text-ink"
-            >
-              <GitHubMark className="size-4" />
-            </a>
           </div>
         </div>
       </header>
