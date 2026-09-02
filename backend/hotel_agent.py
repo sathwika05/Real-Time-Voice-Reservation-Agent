@@ -5,7 +5,6 @@ import json
 import boto3
 import uuid
 import warnings
-import pyaudio
 import pytz
 import random
 import hashlib
@@ -36,7 +35,12 @@ warnings.filterwarnings("ignore")
 INPUT_SAMPLE_RATE = 16000  #microphone input is recorded at 16000 samples/second i.e 16000 kilo hertz that is what nova sonic expects for incoming speech (16000 means less audio quality but still it will be able to identify) 
 OUTPUT_SAMPLE_RATE = 24000 # audio we play back from nova sonic 24000 samples/second i.e 24000 kilo hertz (24000 is better quality response)
 CHANNELS = 1 # means audio is mono not stereo with two channels. one channel is standard for voice agents
-FORMAT = pyaudio.paInt16  # each sample 16 bite signed integer and common raw audio format
+# The sample format lives on AudioStreamer rather than here: it is
+# pyaudio.paInt16, and naming it at module level meant importing pyaudio to
+# import this file at all. server.py imports this module and never touches a
+# local audio device, so that import forced the portaudio system library onto
+# every machine running the browser transport - including a deploy target that
+# has no sound card. See AudioStreamer.__init__.
 CHUNK_SIZE = 1024 # Number of frames per buffer. meaning we read and write audio in blocks of 1024 samples at a time. #smaller chunks means lower latency its faster but more CPU overhead and can be interrupted quickly. 1024 is the nice middle ground of real time streaming.
 
 
@@ -1672,7 +1676,14 @@ class AudioStreamer:
         # Get a reference to the asyncio event loop so synchronous code (such as microphone callbacks running in another thread)
         # can safely schedule async tasks onto the main event loop.
         
-        # Initialize PyAudio
+        # PyAudio is imported here, not at module scope, so that importing this
+        # file costs nothing on a machine with no audio hardware. This is the
+        # only class that touches a local device; the agent core does not.
+        import pyaudio
+
+        self._pyaudio = pyaudio
+        self.FORMAT = pyaudio.paInt16      # 16-bit signed samples
+
         debug_print("AudioStreamer Initializing PyAudio...")
         self.p = time_it("AudioStreamer Initializing PyAudio...", pyaudio.PyAudio)
         debug_print("AudioStreamer PyAudio initialized")
@@ -1683,7 +1694,7 @@ class AudioStreamer:
         self.input_stream = time_it(
             "AudioStreamerOpenAudio",
             lambda: self.p.open(
-                format= FORMAT,
+                format= self.FORMAT,
                 channels = CHANNELS,
                 rate=INPUT_SAMPLE_RATE,
                 input = True,
@@ -1704,7 +1715,7 @@ class AudioStreamer:
         self.output_stream = time_it(
             "AudioStreamerOpenAudio",
             lambda: self.p.open(
-                format = FORMAT,
+                format = self.FORMAT,
                 channels=CHANNELS,
                 rate = OUTPUT_SAMPLE_RATE,
                 output = True,
@@ -1730,7 +1741,7 @@ class AudioStreamer:
             )
 
         # Tell PyAudio to keep the microphone stream running.
-        return (None, pyaudio.paContinue)
+        return (None, self._pyaudio.paContinue)
 
     async def process_input_audio(self, audio_data):
         """Process a single audio chunk directly"""

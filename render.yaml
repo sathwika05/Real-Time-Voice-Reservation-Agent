@@ -1,0 +1,28 @@
+# Render Blueprint - https://render.com/docs/blueprint-spec
+#
+# Deploys the portfolio page only, as a static site.
+#
+# Not a web service, deliberately. The live agent needs AWS credentials and
+# would let anyone with the URL hold unlimited Nova Sonic conversations on this
+# account, with no auth and no spend ceiling. A static site also never sleeps,
+# so it needs no keep-alive pinger the way a free web service does.
+services:
+  - type: web
+    name: voice-reservation-agent
+    runtime: static
+    rootDir: front-end
+    # The final copy promotes /portfolio to the site root. Without it the root
+    # would serve the live client, which opens a WebSocket to a backend that is
+    # not deployed - a dead page at the most visible URL.
+    buildCommand: npm ci && STATIC_EXPORT=1 npm run build && cp out/portfolio/index.html out/index.html
+    staticPublishPath: out
+    pullRequestPreviewsEnabled: false
+    headers:
+      # The export is content-hashed under /_next/static, so it is safe to cache
+      # hard. Everything else stays revalidated so a redeploy is picked up.
+      - path: /_next/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
