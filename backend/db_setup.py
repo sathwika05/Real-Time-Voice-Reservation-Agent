@@ -60,10 +60,21 @@ def setup_demo_data():
             return
 
     # --- 3. Seed Guest Data ---
+    #
+    # Four guests, chosen so every branch the tools can take is reachable in a
+    # live conversation:
+    #
+    #   Anna Smith    upcoming stay, fully paid          -> the happy path
+    #   Mark Johnson  upcoming stay with a balance due   -> the balance branch
+    #                 plus one past stay                 -> includePastStays
+    #   Priya Raman   past stay only                     -> "no upcoming reservations"
+    #   David Chen    profile but no bookings at all     -> "no reservations found"
+    #
+    # A name that is NOT in this table (say "John Doe") exercises the
+    # found:False path in checkGuestProfileTool.
     print("\n--- Seeding Hotel Guests ---")
     guests = dynamodb.Table('Hotel_Guests')
-    
-    # Guest 1: Upcoming stay, Gold member, no issues
+
     guests.put_item(Item={
         'guestName': 'Anna Smith',
         'dob': '1991-06-05',
@@ -76,7 +87,6 @@ def setup_demo_data():
         'vipFlag': True
     })
 
-    # Guest 2: Has a reservation with an outstanding balance and special requests
     guests.put_item(Item={
         'guestName': 'Mark Johnson',
         'dob': '1985-01-21',
@@ -88,29 +98,54 @@ def setup_demo_data():
         'preferredView': 'City',
         'vipFlag': False
     })
-    
-    print("Guests seeded: Anna Smith (Gold), Mark Johnson (Standard)")
+
+    guests.put_item(Item={
+        'guestName': 'Priya Raman',
+        'dob': '1978-11-30',
+        'loyaltyTier': 'Platinum',
+        'phoneNumber': '+1-555-777-8888',
+        'email': 'priya.raman@example.com',
+        'preferredLanguage': 'en-US',
+        'preferredBedType': 'King',
+        'preferredView': 'Garden',
+        'vipFlag': True
+    })
+
+    guests.put_item(Item={
+        'guestName': 'David Chen',
+        'dob': '1996-02-14',
+        'loyaltyTier': 'Standard',
+        'phoneNumber': '+1-555-222-9999',
+        'email': 'david.chen@example.com',
+        'preferredLanguage': 'en-US',
+        'preferredBedType': 'Twin',
+        'preferredView': 'City',
+        'vipFlag': False
+    })
+
+    print("Guests seeded: Anna Smith (Gold/VIP), Mark Johnson (Standard),")
+    print("               Priya Raman (Platinum/VIP), David Chen (Standard)")
 
     # --- 4. Seed Reservation Data ---
     print("\n--- Seeding Hotel Reservations ---")
     reservations = dynamodb.Table('Hotel_Reservations')
-    
-    today = datetime.date.today()
-    tomorrow = (today + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-    day_after = (today + datetime.timedelta(days=2)).strftime('%Y-%m-%d')
-    next_week = (today + datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-    next_week_plus_two = (today + datetime.timedelta(days=9)).strftime('%Y-%m-%d')
 
-    # Reservation 1: Anna - upcoming confirmed reservation, fully paid
+    today = datetime.date.today()
+    def day(n):
+        return (today + datetime.timedelta(days=n)).strftime('%Y-%m-%d')
+
+    # A stay counts as upcoming when checkOutDate >= today AND status is
+    # Confirmed or CheckedIn. Anna sits three days out rather than tomorrow so
+    # there is room either side to move the check-out date during a demo.
     reservations.put_item(Item={
         'reservationId': 'RES-1001',
         'guestName': 'Anna Smith',
         'roomNumber': '1205',
         'roomType': 'King Deluxe',
-        'checkInDate': tomorrow,
-        'checkOutDate': day_after,
-        'status': 'Confirmed',           # other possibilities: CheckedIn, CheckedOut, Cancelled, NoShow
-        'paymentStatus': 'Paid',         # Paid | DepositPaid | Unpaid | Partial
+        'checkInDate': day(3),
+        'checkOutDate': day(6),
+        'status': 'Confirmed',
+        'paymentStatus': 'Paid',
         'balanceDue': Decimal('0.00'),
         'bookingChannel': 'Hotel Website',
         'specialRequests': ['High floor', 'Late check-out'],
@@ -118,14 +153,15 @@ def setup_demo_data():
         'allowVoiceAgentChanges': True
     })
 
-    # Reservation 2: Mark - confirmed, with outstanding balance and airport pickup
+    # paymentStatus != Paid, so checkReservationStatusTool appends the balance
+    # line to its spoken message.
     reservations.put_item(Item={
         'reservationId': 'RES-2001',
         'guestName': 'Mark Johnson',
         'roomNumber': '0803',
         'roomType': 'Queen Standard',
-        'checkInDate': next_week,
-        'checkOutDate': next_week_plus_two,
+        'checkInDate': day(10),
+        'checkOutDate': day(12),
         'status': 'Confirmed',
         'paymentStatus': 'DepositPaid',
         'balanceDue': Decimal('240.50'),
@@ -135,28 +171,49 @@ def setup_demo_data():
         'allowVoiceAgentChanges': True
     })
 
-    # Reservation 3: Mark - past stay, already checked out (for “previous stays” queries)
     reservations.put_item(Item={
         'reservationId': 'RES-1999',
         'guestName': 'Mark Johnson',
         'roomNumber': '0502',
         'roomType': 'Queen Standard',
-        'checkInDate': (today - datetime.timedelta(days=10)).strftime('%Y-%m-%d'),
-        'checkOutDate': (today - datetime.timedelta(days=7)).strftime('%Y-%m-%d'),
+        'checkInDate': day(-10),
+        'checkOutDate': day(-7),
         'status': 'CheckedOut',
         'paymentStatus': 'Paid',
         'balanceDue': Decimal('0.00'),
         'bookingChannel': 'Hotel Website',
         'specialRequests': ['Early check-in'],
         'eligibleForLateCheckout': False,
-        'allowVoiceAgentChanges': False  # historical, don’t modify
+        'allowVoiceAgentChanges': False
     })
 
+    # Priya has history but nothing booked, which is the only way to reach the
+    # "You have no upcoming reservations." branch on a guest who does exist.
+    reservations.put_item(Item={
+        'reservationId': 'RES-1750',
+        'guestName': 'Priya Raman',
+        'roomNumber': '1502',
+        'roomType': 'King Suite',
+        'checkInDate': day(-30),
+        'checkOutDate': day(-27),
+        'status': 'CheckedOut',
+        'paymentStatus': 'Paid',
+        'balanceDue': Decimal('0.00'),
+        'bookingChannel': 'Hotel Website',
+        'specialRequests': ['Champagne on arrival'],
+        'eligibleForLateCheckout': False,
+        'allowVoiceAgentChanges': False
+    })
+
+    # David Chen deliberately has no rows at all.
+
     print("Reservations seeded:")
-    print(" - RES-1001 (Anna, upcoming, fully paid)")
-    print(" - RES-2001 (Mark, upcoming, balance due)")
-    print(" - RES-1999 (Mark, past stay, checked out)")
-    
+    print(" - RES-1001  Anna Smith    upcoming  King Deluxe     Paid          $0.00")
+    print(" - RES-2001  Mark Johnson  upcoming  Queen Standard  DepositPaid   $240.50")
+    print(" - RES-1999  Mark Johnson  past      Queen Standard  Paid")
+    print(" - RES-1750  Priya Raman   past      King Suite      Paid")
+    print(" - (David Chen has no reservations, on purpose)")
+
     print("\n--- Setup Complete ---")
 
 if __name__ == '__main__':
