@@ -26,26 +26,24 @@ That architectural difference is why response latency here is measured in **hund
 
 ```mermaid
 flowchart LR
-    subgraph clients["Transports"]
-        Mic["🎤 Local mic"] --> AS["AudioStreamer<br/>PyAudio"]
-        Browser["🌐 Browser<br/>AudioWorklet"]
+    subgraph T["Transports"]
+        Mic["🎤 Mic + speaker"] <--> AS["AudioStreamer<br/>PyAudio"]
+        Br["🌐 Browser<br/>AudioWorklet"] <--> WS["server.py<br/>FastAPI"]
     end
 
-    Browser <-->|"PCM frames + JSON events<br/>one WebSocket"| WS["server.py<br/>FastAPI"]
-
-    subgraph core["Agent core — transport agnostic"]
-        BSM["BedrockStreamManager"]
-        TP["ToolProcessor"]
+    subgraph C["Agent core — imports no audio library"]
+        BSM["BedrockStreamManager"] <--> TP["ToolProcessor"]
     end
 
-    AS -->|"add_audio_chunk"| BSM
-    WS -->|"add_audio_chunk"| BSM
-    BSM <-->|"bidirectional stream"| NS["Amazon Nova Sonic"]
-    BSM -->|"toolUse"| TP
-    TP <--> DDB[("DynamoDB<br/>Hotel_Guests · Hotel_Reservations")]
-    TP -->|"toolResult"| BSM
-    BSM -->|"audio_output_queue"| AS
-    BSM -->|"audio_output_queue"| WS
+    subgraph A["AWS"]
+        NS["Amazon Nova Sonic"]
+        DB[("DynamoDB<br/>Hotel_Guests<br/>Hotel_Reservations")]
+    end
+
+    AS <-->|"add_audio_chunk<br/>audio_output_queue"| BSM
+    WS <-->|"add_audio_chunk<br/>audio_output_queue"| BSM
+    BSM <-->|"bidirectional stream"| NS
+    TP <-->|"get · update"| DB
 ```
 
 The Next.js app serves two routes. `/` is the live client above; `/portfolio` is a
@@ -139,7 +137,7 @@ sequenceDiagram
     NS-->>G: "Your room has been changed."
 ```
 
-Step 8 is the load-bearing one: `written: false`. There is no id to commit with
+Step 9 is the load-bearing one: `written: false`. There is no id to commit with
 until a proposal exists, so the read-back cannot be skipped by a model that
 decides to be helpful.
 
